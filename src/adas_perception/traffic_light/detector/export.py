@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import torch
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,5 +27,19 @@ def export_onnx(
     opset_version:
         ONNX opset version to target.
     """
-    # TODO: torch.onnx.export with dynamic axes
-    raise NotImplementedError("export_onnx not yet implemented")
+    model.eval()
+    dummy = torch.randn(1, 3, *input_size)
+
+    torch.onnx.export(
+        model,
+        dummy,
+        output_path,
+        opset_version=opset_version,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={
+            "input": {0: "batch"},
+            "output": {0: "batch"},
+        },
+    )
+    logger.info("Exported ONNX model to %s", output_path)

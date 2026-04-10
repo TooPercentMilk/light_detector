@@ -18,6 +18,11 @@ dependencies = [
 dev = [
     "pytest>=7.0",
 ]
+models = [
+    "yolox @ git+https://github.com/Megvii-BaseDetection/YOLOX.git",
+    "cython_bbox>=0.1.5",
+    "lap>=0.4",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

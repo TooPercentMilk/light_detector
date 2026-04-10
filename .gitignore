@@ -168,6 +168,14 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# Model weights
+weights/
+*.pth
+*.onnx
+
+# External repos (managed via setup_external.py)
+external/*/
+
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

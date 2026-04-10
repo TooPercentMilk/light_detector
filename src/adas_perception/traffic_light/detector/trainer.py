@@ -7,7 +7,11 @@ logger = logging.getLogger(__name__)
 
 
 class YoloxTrainer:
-    """Trains a YOLOX model on a traffic light detection dataset."""
+    """Trains a YOLOX model on a traffic light detection dataset.
+
+    Requires the ``yolox`` package (``pip install -e ".[models]"``).
+    Leverages YOLOX's built-in Exp system for experiment configuration.
+    """
 
     def __init__(
         self,
@@ -32,6 +36,19 @@ class YoloxTrainer:
             Path to a COCO-format dataset directory.
         epochs, batch_size, lr:
             Standard training hyperparameters.
+
+        The intended integration pattern::
+
+            from yolox.exp import get_exp
+
+            exp = get_exp(None, "yolox-s")
+            exp.data_dir = dataset_path
+            exp.max_epoch = epochs
+            exp.basic_lr_per_img = lr / (batch_size * 8)
+            exp.output_dir = str(self.output_dir)
+
+            trainer = exp.get_trainer(...)  # YOLOX's own Trainer
+            trainer.train()
         """
         # TODO: build dataset, data-loader, optimizer, training loop
         raise NotImplementedError("YoloxTrainer.train not yet implemented")

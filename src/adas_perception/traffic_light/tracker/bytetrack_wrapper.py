@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
 from typing import List
+
+import numpy as np
 
 from ..config import TrackerConfig
 from ..schemas import Detection, TrackedObject
@@ -9,23 +13,110 @@ from .base import BaseTracker
 
 logger = logging.getLogger(__name__)
 
+# ByteTrack lives in external/ByteTrack (cloned via setup_external.py).
+# We add it to sys.path lazily so the wrapper can still be imported when the
+# external repo hasn't been cloned yet.
+_bytetrack_available: bool | None = None
+_EXTERNAL_DIR = Path(__file__).resolve().parents[4] / "external" / "ByteTrack"
+
+
+def _ensure_bytetrack_on_path() -> None:
+    global _bytetrack_available
+    if _bytetrack_available is not None:
+        return
+
+    if _EXTERNAL_DIR.is_dir():
+        path_str = str(_EXTERNAL_DIR)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
+        try:
+            from yolox.tracker.byte_tracker import BYTETracker  # noqa: F401
+
+            _bytetrack_available = True
+        except ImportError:
+            _bytetrack_available = False
+    else:
+        _bytetrack_available = False
+
+    if not _bytetrack_available:
+        logger.warning(
+            "ByteTrack not found at %s — running in stub mode. "
+            "Run `python setup_external.py` to clone it.",
+            _EXTERNAL_DIR,
+        )
+
+
+class _TrackerArgs:
+    """Mimics the argparse namespace that BYTETracker expects."""
+
+    def __init__(self, config: TrackerConfig) -> None:
+        self.track_thresh = config.track_thresh
+        self.track_buffer = config.track_buffer
+        self.match_thresh = config.match_thresh
+        self.mot20 = False
+
 
 class ByteTrackWrapper(BaseTracker):
-    """ByteTrack multi-object tracker."""
+    """ByteTrack multi-object tracker.
+
+    Requires ``external/ByteTrack`` to be cloned
+    (``python setup_external.py``).
+    """
 
     def __init__(self, config: TrackerConfig) -> None:
         super().__init__(config)
-        self._tracks: list = []
+        self._tracker = None
         self._frame_id: int = 0
-        # TODO: initialise internal ByteTrack state (Kalman filters, etc.)
+
+        _ensure_bytetrack_on_path()
+        if _bytetrack_available:
+            from yolox.tracker.byte_tracker import BYTETracker
+
+            args = _TrackerArgs(config)
+            self._tracker = BYTETracker(args, frame_rate=config.frame_rate)
 
     def update(
         self, detections: List[Detection], frame_id: int
     ) -> List[TrackedObject]:
-        # TODO: two-stage association (high-score + low-score), Kalman predict/update
         self._frame_id = frame_id
-        return []
+
+        if self._tracker is None or len(detections) == 0:
+            return []
+
+        # BYTETracker expects an (N, 5) numpy array: x1, y1, x2, y2, score
+        det_array = np.array(
+            [[*d.bbox, d.confidence] for d in detections], dtype=np.float32
+        )
+
+        img_h, img_w = self.config.track_buffer, self.config.track_buffer
+        # BYTETracker.update signature: (output_results, img_info, img_size)
+        online_targets = self._tracker.update(
+            det_array,
+            [img_h, img_w],
+            [img_h, img_w],
+        )
+
+        tracked: list[TrackedObject] = []
+        for t in online_targets:
+            tlwh = t.tlwh
+            x1, y1, w, h = tlwh
+            tracked.append(
+                TrackedObject(
+                    track_id=int(t.track_id),
+                    bbox=np.array(
+                        [x1, y1, x1 + w, y1 + h], dtype=np.float32
+                    ),
+                    confidence=float(t.score),
+                    class_id=0,
+                    age=int(t.tracklet_len),
+                )
+            )
+        return tracked
 
     def reset(self) -> None:
-        self._tracks.clear()
         self._frame_id = 0
+        if _bytetrack_available:
+            from yolox.tracker.byte_tracker import BYTETracker
+
+            args = _TrackerArgs(self.config)
+            self._tracker = BYTETracker(args, frame_rate=self.config.frame_rate)
