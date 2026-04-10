@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adas-perception-traffic-light"
+version = "0.1.0"
+description = "Traffic light detection and tracking module for ADAS perception"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
