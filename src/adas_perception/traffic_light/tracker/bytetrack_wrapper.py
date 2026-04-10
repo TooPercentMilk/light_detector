@@ -13,9 +13,13 @@ from .base import BaseTracker
 
 logger = logging.getLogger(__name__)
 
-# ByteTrack lives in external/ByteTrack (cloned via setup_external.py).
-# We add it to sys.path lazily so the wrapper can still be imported when the
-# external repo hasn't been cloned yet.
+# BYTETracker is available two ways (in priority order):
+#   1. pip-installed YOLOX (preferred) — includes yolox.tracker.byte_tracker
+#   2. external/ByteTrack cloned via setup_external.py (fallback)
+#
+# We always try the pip-installed yolox first.  The external/ clone is only
+# added to sys.path as a fallback, and is appended (not prepended) so it
+# can never shadow a properly installed yolox package.
 _bytetrack_available: bool | None = None
 _EXTERNAL_DIR = Path(__file__).resolve().parents[4] / "external" / "ByteTrack"
 
@@ -25,25 +29,33 @@ def _ensure_bytetrack_on_path() -> None:
     if _bytetrack_available is not None:
         return
 
+    # Attempt 1: pip-installed yolox already on sys.path
+    try:
+        from yolox.tracker.byte_tracker import BYTETracker  # noqa: F401
+
+        _bytetrack_available = True
+        return
+    except ImportError:
+        pass
+
+    # Attempt 2: external/ByteTrack clone (appended to avoid shadowing yolox pkg)
     if _EXTERNAL_DIR.is_dir():
         path_str = str(_EXTERNAL_DIR)
         if path_str not in sys.path:
-            sys.path.insert(0, path_str)
+            sys.path.append(path_str)
         try:
             from yolox.tracker.byte_tracker import BYTETracker  # noqa: F401
 
             _bytetrack_available = True
+            return
         except ImportError:
-            _bytetrack_available = False
-    else:
-        _bytetrack_available = False
+            pass
 
-    if not _bytetrack_available:
-        logger.warning(
-            "ByteTrack not found at %s — running in stub mode. "
-            "Run `python setup_external.py` to clone it.",
-            _EXTERNAL_DIR,
-        )
+    _bytetrack_available = False
+    logger.warning(
+        "BYTETracker not found. Either install YOLOX "
+        "(`pip install -e '.[models]'`) or run `python setup_external.py`."
+    )
 
 
 class _TrackerArgs:

@@ -5,9 +5,26 @@ Usage::
     python setup_external.py          # clone if missing, pull if present
     python setup_external.py --clean  # remove all external repos
 
-Repos are cloned into ``external/<name>`` and pinned to a specific commit so
-builds are reproducible.  The wrappers in this project add ``external/<name>``
-to ``sys.path`` at import time — no manual ``PYTHONPATH`` setup needed.
+----
+
+**Do I need this?**
+
+ByteTrack (the tracker) is already bundled inside the pip-installable YOLOX
+package (``yolox.tracker.byte_tracker``), so if you have run::
+
+    pip install -e ".[models]"
+
+then ``setup_external.py`` is **not required** for normal inference.
+
+Clone the external ByteTrack repo only if you need the *latest standalone*
+ByteTrack version, which may contain improvements not yet merged into YOLOX.
+The ``bytetrack_wrapper`` will always prefer the pip-installed version and
+only fall back to ``external/ByteTrack`` if the pip package is absent.
+
+----
+
+Repos are cloned into ``external/<name>`` and pinned to a specific ref so
+builds are reproducible.
 """
 
 from __future__ import annotations
