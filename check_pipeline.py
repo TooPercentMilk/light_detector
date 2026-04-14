@@ -230,14 +230,11 @@ except Exception as e:
     record(FAIL, "Tracker registry", str(e))
 
 try:
-    from adas_perception.traffic_light.tracker.bytetrack_wrapper import (
-        ByteTrackWrapper,
-        _bytetrack_available,
-        _ensure_bytetrack_on_path,
-    )
+    import adas_perception.traffic_light.tracker.bytetrack_wrapper as _btw_mod
+    from adas_perception.traffic_light.tracker.bytetrack_wrapper import ByteTrackWrapper
 
-    _ensure_bytetrack_on_path()
-    if _bytetrack_available:
+    _btw_mod._ensure_bytetrack_on_path()
+    if _btw_mod._bytetrack_available:
         record(PASS, "ByteTrackWrapper", "BYTETracker available and wrapper implemented")
     else:
         record(FAIL, "ByteTrackWrapper", "BYTETracker NOT importable — install yolox or run setup_external.py")
