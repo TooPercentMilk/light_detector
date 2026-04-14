@@ -20,6 +20,7 @@ dev = [
 ]
 models = [
     "yolox @ git+https://github.com/Megvii-BaseDetection/YOLOX.git",
+    "pycocotools>=2.0",
     "cython_bbox>=0.1.5",
     "lap>=0.4",
 ]
