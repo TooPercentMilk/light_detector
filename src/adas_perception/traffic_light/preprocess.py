@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import cv2
 import numpy as np
 import torch
 
@@ -22,7 +23,7 @@ class Preprocessor:
     def __call__(self, image: np.ndarray) -> torch.Tensor:
         """Convert a HWC uint8 BGR image to a CHW float32 tensor.
 
-        Steps (to be filled in):
+        Steps:
           1. Optionally swap B↔R channels.
           2. Resize to ``(input_h, input_w)``.
           3. Convert to float32 and scale to [0, 1].
@@ -30,5 +31,17 @@ class Preprocessor:
           5. Transpose HWC → CHW.
           6. Return as ``torch.Tensor``.
         """
-        # TODO: implement full preprocessing pipeline
-        raise NotImplementedError("Preprocessor.__call__ not yet implemented")
+        img = image.copy()
+
+        if self.swap_rb:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        img = cv2.resize(img, (self.input_w, self.input_h))
+
+        img = img.astype(np.float32) / 255.0
+
+        img = (img - self.mean) / self.std
+
+        img = img.transpose(2, 0, 1)  # HWC → CHW
+
+        return torch.from_numpy(np.ascontiguousarray(img))
