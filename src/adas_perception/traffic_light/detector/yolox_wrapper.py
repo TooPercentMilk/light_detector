@@ -53,8 +53,7 @@ class YoloxWrapper(BaseDetector):
 
         from yolox.exp import get_exp
 
-        # Build the YOLOX-s experiment as default; override via config later.
-        exp = get_exp(None, "yolox-s")
+        exp = get_exp(None, self.config.exp_name)
         exp.num_classes = self.config.num_classes
         exp.test_size = tuple(self.config.input_size)
 

@@ -88,7 +88,7 @@ class TrafficLightNode:
         results: List[TrafficLight] = []
         for obj in tracked:
             roi = self.roi_refiner.refine(image, obj.bbox)
-            raw_state = self.classifier.classify(roi)
+            raw_state, state_conf = self.classifier.classify(roi)
             smoothed_state = self.smoother.update(obj.track_id, raw_state)
 
             results.append(
@@ -97,7 +97,7 @@ class TrafficLightNode:
                     bbox=obj.bbox,
                     state=smoothed_state,
                     detection_confidence=obj.confidence,
-                    state_confidence=0.0,  # TODO: propagate classifier confidence
+                    state_confidence=state_conf,
                 )
             )
 

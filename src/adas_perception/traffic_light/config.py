@@ -16,6 +16,7 @@ class DetectorConfig:
     confidence_threshold: float = 0.25
     nms_threshold: float = 0.45
     num_classes: int = 1
+    exp_name: str = "yolox-m"
 
 
 @dataclass

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Tuple
 
 import numpy as np
 
@@ -26,7 +26,7 @@ class BaseClassifier(ABC):
         """Load classifier weights."""
 
     @abstractmethod
-    def classify(self, roi: np.ndarray) -> LightState:
+    def classify(self, roi: np.ndarray) -> Tuple[LightState, float]:
         """Classify the traffic light state from a cropped ROI image.
 
         Parameters
@@ -36,5 +36,5 @@ class BaseClassifier(ABC):
 
         Returns
         -------
-        The predicted state.
+        A tuple of (predicted state, confidence score).
         """

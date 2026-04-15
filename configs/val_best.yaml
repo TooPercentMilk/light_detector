@@ -1,6 +1,6 @@
 detector:
   type: "yolox"
-  model_path: "weights/yolox_tl.pth"
+  model_path: "runs/train/detector/best.pth"
   device: "cuda"
   input_size: [640, 640]
   confidence_threshold: 0.25
@@ -17,7 +17,7 @@ tracker:
 
 classifier:
   type: "cnn"
-  model_path: "weights/tl_state_classifier.pth"
+  model_path: "runs/train/classifier/best.pth"
   device: "cuda"
   input_size: [32, 64]
   classes: ["red", "yellow", "green", "off"]
