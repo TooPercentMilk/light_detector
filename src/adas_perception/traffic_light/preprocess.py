@@ -11,37 +11,44 @@ if TYPE_CHECKING:
 
 
 class Preprocessor:
-    """Resize, normalize, and convert an image to a model-ready tensor."""
+    """Resize, normalize, and convert an image to a model-ready tensor.
+
+    Uses YOLOX-compatible preprocessing: letterbox resize that preserves
+    aspect ratio (padding with value 114) and outputs float32 in [0, 255].
+    """
 
     def __init__(self, config: PreprocessConfig) -> None:
         self.config = config
         self.input_h, self.input_w = config.input_size
-        self.mean = np.array(config.mean, dtype=np.float32)
-        self.std = np.array(config.std, dtype=np.float32)
         self.swap_rb = config.swap_rb
 
-    def __call__(self, image: np.ndarray) -> torch.Tensor:
+    def __call__(self, image: np.ndarray) -> tuple[torch.Tensor, float]:
         """Convert a HWC uint8 BGR image to a CHW float32 tensor.
 
-        Steps:
-          1. Optionally swap B↔R channels.
-          2. Resize to ``(input_h, input_w)``.
-          3. Convert to float32 and scale to [0, 1].
-          4. Normalize by mean / std.
-          5. Transpose HWC → CHW.
-          6. Return as ``torch.Tensor``.
+        Returns
+        -------
+        (tensor, scale)
+            *tensor* is CHW float32 in [0, 255] (YOLOX convention).
+            *scale* is the letterbox scale factor — divide detection
+            coordinates by this value to map back to the original image.
         """
         img = image.copy()
 
         if self.swap_rb:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        img = cv2.resize(img, (self.input_w, self.input_h))
+        # Letterbox resize — maintain aspect ratio, pad with 114
+        ih, iw = img.shape[:2]
+        r = min(self.input_w / iw, self.input_h / ih)
+        new_w, new_h = int(iw * r), int(ih * r)
+        resized = cv2.resize(img, (new_w, new_h))
 
-        img = img.astype(np.float32) / 255.0
+        canvas = np.full((self.input_h, self.input_w, 3), 114, dtype=np.uint8)
+        canvas[:new_h, :new_w] = resized
 
-        img = (img - self.mean) / self.std
+        # float32 in [0, 255] — YOLOX convention (no /255 normalisation)
+        img_f = canvas.astype(np.float32)
 
-        img = img.transpose(2, 0, 1)  # HWC → CHW
+        img_f = img_f.transpose(2, 0, 1)  # HWC → CHW
 
-        return torch.from_numpy(np.ascontiguousarray(img))
+        return torch.from_numpy(np.ascontiguousarray(img_f)), r

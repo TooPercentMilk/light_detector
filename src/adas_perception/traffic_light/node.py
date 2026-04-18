@@ -69,7 +69,7 @@ class TrafficLightNode:
         Returns a list of :class:`TrafficLight` results for this frame.
         """
         # 1. Pre-process
-        tensor = self.preprocessor(image)
+        tensor, scale = self.preprocessor(image)
 
         # 2. Detect
         raw_detections = self.detector.predict(tensor)
@@ -80,6 +80,10 @@ class TrafficLightNode:
             nms_threshold=self.config.detector.nms_threshold,
             confidence_threshold=self.config.detector.confidence_threshold,
         )
+
+        # 3b. Rescale boxes from letterbox space → original image coords
+        for det in detections:
+            det.bbox = det.bbox / scale
 
         # 4. Track
         tracked = self.tracker.update(detections, frame_id)
