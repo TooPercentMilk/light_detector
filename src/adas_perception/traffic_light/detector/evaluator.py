@@ -96,6 +96,7 @@ def evaluate(
     nms_threshold: float = 0.65,
     batch_size: int = 8,
     device: str | None = None,
+    image_ids: list[int] | None = None,
 ) -> Dict[str, float]:
     """Evaluate a detector on a COCO-format dataset.
 
@@ -117,6 +118,8 @@ def evaluate(
         Evaluation batch size.
     device:
         Inference device; auto-detected from *model* when ``None``.
+    image_ids:
+        If given, restrict COCO evaluation to this subset of image IDs.
 
     Returns
     -------
@@ -219,6 +222,8 @@ def evaluate(
     coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
     if iou_thresholds is not None:
         coco_eval.params.iouThrs = np.array(iou_thresholds)
+    if image_ids is not None:
+        coco_eval.params.imgIds = image_ids
 
     coco_eval.evaluate()
     coco_eval.accumulate()
