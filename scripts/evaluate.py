@@ -13,6 +13,10 @@ Usage::
 
     # Override device
     python scripts/evaluate.py --config configs/val_best.yaml --dataset data/coco_tl --device cpu
+
+    # Evaluate only validation images that contain at least one traffic light
+    python scripts/evaluate.py --config configs/val_best.yaml --dataset data/coco_tl \
+        --positive-images-only
 """
 
 from __future__ import annotations
@@ -50,6 +54,17 @@ def _sequence_from_filename(fname: str) -> str:
     return "unknown"
 
 
+def _positive_image_ids(coco: dict) -> set[int]:
+    """Return val image IDs that contain at least one valid traffic-light annotation."""
+    image_ids: set[int] = set()
+    for ann in coco.get("annotations", []):
+        bbox = ann.get("bbox", [])
+        if len(bbox) < 4 or bbox[2] <= 0 or bbox[3] <= 0:
+            continue
+        image_ids.add(ann["image_id"])
+    return image_ids
+
+
 # ------------------------------------------------------------------
 # Detector evaluation (COCO mAP)
 # ------------------------------------------------------------------
@@ -59,6 +74,7 @@ def evaluate_detector(
     dataset_path: str,
     device: str | None = None,
     batch_size: int = 8,
+    positive_images_only: bool = False,
 ) -> dict[str, dict[str, float]]:
     """Load the detector from *config_path* and evaluate on the val split.
 
@@ -94,6 +110,21 @@ def evaluate_detector(
 
     logger.info("Evaluating detector on %s …", dataset_path)
 
+    data_dir = Path(dataset_path).resolve()
+    ann_path = data_dir / "annotations" / "instances_val.json"
+    coco = None
+    positive_image_ids: set[int] | None = None
+    if ann_path.is_file():
+        with open(ann_path, "r", encoding="utf-8") as f:
+            coco = json.load(f)
+        if positive_images_only:
+            positive_image_ids = _positive_image_ids(coco)
+            logger.info(
+                "Detector validation restricted to positive images only: %d -> %d images",
+                len(coco["images"]),
+                len(positive_image_ids),
+            )
+
     # Overall evaluation
     total_metrics = evaluate(
         model,
@@ -101,20 +132,21 @@ def evaluate_detector(
         input_size=tuple(cfg.detector.input_size),
         batch_size=batch_size,
         device=dev,
+        positive_images_only=positive_images_only,
     )
     results: dict[str, dict[str, float]] = {"total": total_metrics}
 
     # Per-sequence evaluation
-    data_dir = Path(dataset_path).resolve()
-    ann_path = data_dir / "annotations" / "instances_val.json"
-    if ann_path.is_file():
-        with open(ann_path, "r", encoding="utf-8") as f:
-            coco = json.load(f)
+    if coco is not None:
         seq_to_ids: dict[str, list[int]] = defaultdict(list)
         for img in coco["images"]:
+            if positive_image_ids is not None and img["id"] not in positive_image_ids:
+                continue
             seq = _sequence_from_filename(img["file_name"])
             seq_to_ids[seq].append(img["id"])
         for seq_name, img_ids in sorted(seq_to_ids.items()):
+            if not img_ids:
+                continue
             logger.info("Evaluating detector on sequence: %s (%d images)", seq_name, len(img_ids))
             seq_metrics = evaluate(
                 model,
@@ -123,6 +155,7 @@ def evaluate_detector(
                 batch_size=batch_size,
                 device=dev,
                 image_ids=img_ids,
+                positive_images_only=positive_images_only,
             )
             results[seq_name] = seq_metrics
 
@@ -337,6 +370,7 @@ def evaluate_pipeline(
     dataset_path: str,
     device: str | None = None,
     iou_threshold: float = 0.5,
+    positive_images_only: bool = False,
 ) -> dict[str, dict[str, float]]:
     """Run the full pipeline on val images and evaluate end-to-end.
 
@@ -376,7 +410,18 @@ def evaluate_pipeline(
         lambda: {"gt": 0, "predictions": 0, "detected": 0, "correct_state": 0}
     )
 
-    for frame_id, (img_id, info) in enumerate(sorted(id_to_file.items())):
+    eval_items = sorted(id_to_file.items())
+    if positive_images_only:
+        positive_image_ids = _positive_image_ids(coco)
+        filtered_items = [item for item in eval_items if item[0] in positive_image_ids]
+        logger.info(
+            "Pipeline validation restricted to positive images only: %d -> %d images",
+            len(eval_items),
+            len(filtered_items),
+        )
+        eval_items = filtered_items
+
+    for frame_id, (img_id, info) in enumerate(eval_items):
         img_path = image_dir / info
         image = cv2.imread(str(img_path))
         if image is None:
@@ -507,6 +552,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Skip end-to-end pipeline evaluation",
     )
+    parser.add_argument(
+        "--positive-images-only",
+        action="store_true",
+        help="Restrict detector and pipeline validation to images with at least one traffic-light annotation",
+    )
 
     args = parser.parse_args(argv)
 
@@ -522,6 +572,9 @@ def main(argv: list[str] | None = None) -> None:
         "detector_weights": cfg.detector.model_path,
         "classifier_weights": cfg.classifier.model_path,
     }
+    results["evaluation_mode"] = {
+        "positive_images_only": args.positive_images_only,
+    }
 
     # --- 1. Detector mAP ---
     if not args.skip_detector:
@@ -529,7 +582,11 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("DETECTOR EVALUATION (COCO mAP)")
         logger.info("=" * 60)
         det_metrics = evaluate_detector(
-            args.config, args.dataset, args.device, args.batch_size
+            args.config,
+            args.dataset,
+            args.device,
+            args.batch_size,
+            args.positive_images_only,
         )
         results["detector"] = det_metrics
         d = det_metrics["total"]
@@ -538,6 +595,10 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- 2. Classifier accuracy ---
     if not args.skip_classifier:
+        if args.positive_images_only:
+            logger.info(
+                "Classifier evaluation already uses annotated ROIs only; no additional image filter is needed."
+            )
         logger.info("")
         logger.info("=" * 60)
         logger.info("CLASSIFIER EVALUATION (per-class metrics)")
@@ -552,7 +613,11 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("PIPELINE EVALUATION (end-to-end)")
         logger.info("=" * 60)
         pipe_metrics = evaluate_pipeline(
-            args.config, args.dataset, args.device, args.iou_threshold
+            args.config,
+            args.dataset,
+            args.device,
+            args.iou_threshold,
+            args.positive_images_only,
         )
         results["pipeline"] = pipe_metrics
 

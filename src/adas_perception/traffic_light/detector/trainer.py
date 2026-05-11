@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from pathlib import Path
 from typing import List, Tuple
 
@@ -9,6 +10,14 @@ import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+from adas_perception.traffic_light.detector.augmentations import (
+    horizontal_flip,
+    hsv_jitter,
+    mosaic,
+    random_crop_translate,
+    random_scale_jitter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +42,13 @@ class _COCODetectionDataset(Dataset):
         input_size: Tuple[int, int],
         max_labels: int = 50,
         augment: bool = True,
+        positive_images_only: bool = False,
+        mosaic_prob: float = 1.0,
+        scale_jitter_range: Tuple[float, float] = (0.5, 1.5),
+        hsv_hue: float = 0.015,
+        hsv_sat: float = 0.7,
+        hsv_val: float = 0.4,
+        flip_prob: float = 0.5,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_dir = self.data_dir / split
@@ -40,27 +56,57 @@ class _COCODetectionDataset(Dataset):
         self.max_labels = max_labels
         self.augment = augment
 
+        # Augmentation parameters
+        self.mosaic_prob = mosaic_prob
+        self.scale_jitter_range = scale_jitter_range
+        self.hsv_hue = hsv_hue
+        self.hsv_sat = hsv_sat
+        self.hsv_val = hsv_val
+        self.flip_prob = flip_prob
+
         ann_path = self.data_dir / "annotations" / json_file
         with open(ann_path, "r", encoding="utf-8") as f:
             coco = json.load(f)
 
         self.images = {img["id"]: img for img in coco["images"]}
-        self.img_ids = list(self.images.keys())
 
-        # Group annotations by image_id
-        self.anns_by_img: dict[int, List[dict]] = {}
-        for ann in coco["annotations"]:
-            self.anns_by_img.setdefault(ann["image_id"], []).append(ann)
-
-        # Build category_id -> 0-based class index
+        # Build category_id -> 0-based class index.
         self.cat_to_idx = {
             cat["id"]: i for i, cat in enumerate(coco["categories"])
         }
 
+        # Group only valid annotations by image_id.
+        self.anns_by_img: dict[int, List[dict]] = {}
+        for ann in coco["annotations"]:
+            x, y, w, h = ann["bbox"]
+            if w <= 0 or h <= 0:
+                continue
+            if ann["category_id"] not in self.cat_to_idx:
+                continue
+            self.anns_by_img.setdefault(ann["image_id"], []).append(ann)
+
+        self.img_ids = list(self.images.keys())
+        if positive_images_only:
+            total_images = len(self.img_ids)
+            self.img_ids = [
+                img_id for img_id in self.img_ids if self.anns_by_img.get(img_id)
+            ]
+            logger.info(
+                "Using positive-only %s split: %d -> %d images",
+                split,
+                total_images,
+                len(self.img_ids),
+            )
+
     def __len__(self) -> int:
         return len(self.img_ids)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _load_raw(self, idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Load a single image with bboxes and class ids (no augmentation).
+
+        Returns ``(image, bboxes, class_ids)`` where *bboxes* is ``(N, 4)``
+        ``[x1, y1, x2, y2]`` and *class_ids* is ``(N,)``.
+        """
         img_id = self.img_ids[idx]
         info = self.images[img_id]
         img_path = self.image_dir / info["file_name"]
@@ -70,8 +116,6 @@ class _COCODetectionDataset(Dataset):
             raise RuntimeError(f"Could not read image: {img_path}")
 
         anns = self.anns_by_img.get(img_id, [])
-
-        # Collect bboxes as [x1, y1, x2, y2] and class ids
         bboxes = []
         class_ids = []
         for ann in anns:
@@ -86,23 +130,45 @@ class _COCODetectionDataset(Dataset):
 
         bboxes = np.array(bboxes, dtype=np.float32).reshape(-1, 4)
         class_ids = np.array(class_ids, dtype=np.float32)
+        return image, bboxes, class_ids
 
-        # --- augmentation ---
-        if self.augment and len(bboxes) > 0:
-            image, bboxes = self._augment(image, bboxes)
-
-        # --- resize to input_size (H, W) ---
-        ih, iw = image.shape[:2]
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         th, tw = self.input_size
+
+        if self.augment and random.random() < self.mosaic_prob:
+            # --- mosaic: combine 4 random images ---
+            indices = [idx] + [random.randint(0, len(self) - 1) for _ in range(3)]
+            imgs, bbs, cids = zip(*(self._load_raw(i) for i in indices))
+            image, bboxes, class_ids = mosaic(
+                list(imgs), list(bbs), list(cids), self.input_size,
+            )
+            # Scale jitter + crop/translate on the mosaic output
+            if self.scale_jitter_range != (1.0, 1.0):
+                image, bboxes = random_scale_jitter(
+                    image, bboxes, self.scale_jitter_range,
+                )
+                image, bboxes = random_crop_translate(
+                    image, bboxes, self.input_size,
+                )
+        else:
+            image, bboxes, class_ids = self._load_raw(idx)
+
+        # --- per-image augmentations (photometric + flip) ---
+        if self.augment:
+            if len(bboxes) > 0 and random.random() < self.flip_prob:
+                image, bboxes = horizontal_flip(image, bboxes)
+            image = hsv_jitter(
+                image, self.hsv_hue, self.hsv_sat, self.hsv_val,
+            )
+
+        # --- resize to input_size (letterbox) ---
+        ih, iw = image.shape[:2]
         r = min(tw / iw, th / ih)
         new_w, new_h = int(iw * r), int(ih * r)
         resized = cv2.resize(image, (new_w, new_h))
 
-        # Paste onto padded canvas
         canvas = np.full((th, tw, 3), 114, dtype=np.uint8)
         canvas[:new_h, :new_w] = resized
-
-        # Scale bboxes
         bboxes *= r
 
         # --- build labels: [class_id, cx, cy, w, h] ---
@@ -124,23 +190,6 @@ class _COCODetectionDataset(Dataset):
         img_t = np.ascontiguousarray(img_t, dtype=np.float32)
 
         return torch.from_numpy(img_t), torch.from_numpy(padded)
-
-    @staticmethod
-    def _augment(image: np.ndarray, bboxes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Simple augmentation: horizontal flip + colour jitter."""
-        if np.random.rand() < 0.5:
-            h, w = image.shape[:2]
-            image = cv2.flip(image, 1)
-            x1 = bboxes[:, 0].copy()
-            bboxes[:, 0] = w - bboxes[:, 2]
-            bboxes[:, 2] = w - x1
-
-        # Brightness / contrast jitter
-        alpha = np.random.uniform(0.8, 1.2)
-        beta = np.random.uniform(-15, 15)
-        image = np.clip(alpha * image.astype(np.float32) + beta, 0, 255).astype(np.uint8)
-
-        return image, bboxes
 
 
 # ------------------------------------------------------------------
@@ -169,6 +218,9 @@ class YoloxTrainer:
         batch_size: int = 16,
         lr: float = 1e-3,
         patience: int = 0,
+        no_mosaic_epochs: int = 15,
+        augment: bool = True,
+        positive_images_only: bool = False,
     ) -> None:
         """Run the training loop.
 
@@ -188,6 +240,9 @@ class YoloxTrainer:
         * ``pretrained_ckpt`` (str) — path to backbone weights for fine-tuning
         * ``exp_name`` (str, default "yolox-s") — YOLOX experiment variant
         * ``data_num_workers`` (int, default 4)
+        * ``no_mosaic_epochs`` (int, default 15) — disable mosaic for the final
+          N epochs so the model adapts to the single-image inference distribution.
+          Set to 0 to keep mosaic on for all epochs.
         """
         from yolox.exp import get_exp
 
@@ -208,6 +263,14 @@ class YoloxTrainer:
         # ---- model ----
         exp = get_exp(None, exp_name)
         exp.num_classes = num_classes
+        # Keep exp metadata in sync with our requested resolution. The YOLOX
+        # model itself is fully convolutional, but exp.input_size / test_size
+        # are read by the head/label assigner and by export utilities.
+        exp.input_size = tuple(input_size)
+        exp.test_size = tuple(input_size)
+        # Disable YOLOX's built-in multi-scale jitter — at 960 it would push
+        # VRAM over the edge and our augmentations are handled in-dataset.
+        exp.random_size = None
         model = exp.get_model()
 
         if pretrained_ckpt and Path(pretrained_ckpt).is_file():
@@ -230,6 +293,11 @@ class YoloxTrainer:
         model.to(device)
         model.train()
 
+        # Allow cuDNN to benchmark and cache the fastest conv algorithm for this
+        # fixed input resolution.  Must be set before the first forward pass.
+        if device != "cpu":
+            torch.backends.cudnn.benchmark = True
+
         # ---- data ----
         dataset = _COCODetectionDataset(
             data_dir=str(dataset_path),
@@ -237,15 +305,21 @@ class YoloxTrainer:
             split="train",
             input_size=input_size,
             max_labels=50,
-            augment=True,
+            augment=augment,
+            positive_images_only=positive_images_only,
         )
+        num_workers = self.model_config.get("data_num_workers", 4)
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=self.model_config.get("data_num_workers", 4),
+            num_workers=num_workers,
             pin_memory=(device != "cpu"),
             drop_last=True,
+            # Keep worker processes alive between epochs to avoid the
+            # spawn/teardown overhead on every epoch (significant on Windows).
+            persistent_workers=(num_workers > 0),
+            prefetch_factor=(4 if num_workers > 0 else None),
         )
 
         if len(loader) == 0:
@@ -286,27 +360,43 @@ class YoloxTrainer:
         best_loss = float("inf")
         epochs_no_improve = 0
 
+        no_mosaic_start = epochs - no_mosaic_epochs if no_mosaic_epochs > 0 else epochs
+
         logger.info(
             "Training: %d epochs, batch=%d, lr=%.1e, device=%s, "
-            "%d images, %d iters/epoch, patience=%s",
+            "%d images, %d iters/epoch, patience=%s, augment=%s, positive_images_only=%s, no_mosaic_after_epoch=%d",
             epochs, batch_size, lr, device, len(dataset), len(loader),
             patience if patience > 0 else "off",
+            augment,
+            positive_images_only,
+            no_mosaic_start,
         )
 
         # ---- training loop ----
         for epoch in range(epochs):
+            # Mosaic cooldown: disable for the final no_mosaic_epochs epochs.
+            if augment and epoch == no_mosaic_start and no_mosaic_epochs > 0:
+                dataset.mosaic_prob = 0.0
+                logger.info(
+                    "Epoch %d: mosaic disabled for final %d epochs",
+                    epoch + 1, no_mosaic_epochs,
+                )
+
             model.train()
             epoch_loss = 0.0
 
             for it, batch in enumerate(loader):
-                imgs = batch[0].to(device, dtype=torch.float32)
-                targets = batch[1].to(device)
+                # Zero gradients at the top with set_to_none for a small
+                # memory/speed win (avoids memset to 0 on every buffer).
+                optimizer.zero_grad(set_to_none=True)
+
+                imgs = batch[0].to(device, dtype=torch.float32, non_blocking=True)
+                targets = batch[1].to(device, non_blocking=True)
 
                 with torch.amp.autocast("cuda", enabled=use_amp):
                     outputs = model(imgs, targets)
                 loss = outputs["total_loss"]
 
-                optimizer.zero_grad()
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()

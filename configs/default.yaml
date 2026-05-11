@@ -2,8 +2,8 @@ detector:
   type: "yolox"
   model_path: "weights/yolox_tl.pth"
   device: "cuda"
-  input_size: [640, 640]
-  confidence_threshold: 0.25
+  input_size: [960, 960]
+  confidence_threshold: 0.2
   nms_threshold: 0.45
   num_classes: 1
   exp_name: "yolox-m"
@@ -27,7 +27,7 @@ temporal_smoother:
   min_consensus: 3
 
 preprocess:
-  input_size: [640, 640]
+  input_size: [960, 960]
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
   swap_rb: true

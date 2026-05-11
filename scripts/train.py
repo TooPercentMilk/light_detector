@@ -10,6 +10,18 @@ Usage::
     # Detector only
     python scripts/train.py --target detector --dataset data/coco_tl --det-epochs 50
 
+    # Detector only, with augmentations disabled
+    python scripts/train.py --target detector --dataset data/coco_tl \
+        --det-no-augment
+
+    # Detector only, using only images that contain at least one traffic light
+    python scripts/train.py --target detector --dataset data/coco_tl \
+        --det-positive-images-only
+
+    # Resume detector training from checkpoint
+    python scripts/train.py --target detector --dataset data/coco_tl \
+        --det-resume runs/train/detector/best.pth --det-epochs 80
+
     # Classifier only
     python scripts/train.py --target classifier --dataset data/coco_tl --cls-epochs 30
 """
@@ -40,12 +52,18 @@ def train_detector(args: argparse.Namespace) -> Path:
     logger.info("DETECTOR TRAINING")
     logger.info("=" * 60)
 
+    # If resuming, use the resume checkpoint; otherwise use pretrained backbone
+    pretrained = args.det_pretrained
+    if args.det_resume:
+        pretrained = args.det_resume
+        logger.info("Resuming from checkpoint: %s", args.det_resume)
+
     trainer = YoloxTrainer(
         model_config={
             "num_classes": args.det_num_classes,
             "input_size": args.det_input_size,
             "device": args.device or ("cuda" if _cuda_available() else "cpu"),
-            "pretrained_ckpt": args.det_pretrained,
+            "pretrained_ckpt": pretrained,
             "exp_name": args.det_exp_name,
             "data_num_workers": args.num_workers,
         },
@@ -57,6 +75,9 @@ def train_detector(args: argparse.Namespace) -> Path:
         batch_size=args.det_batch_size,
         lr=args.det_lr,
         patience=args.det_patience,
+        no_mosaic_epochs=args.det_no_mosaic_epochs,
+        augment=not args.det_no_augment,
+        positive_images_only=args.det_positive_images_only,
     )
 
     final = output_dir / "yolox_tl.pth"
@@ -145,10 +166,22 @@ def main(argv: list[str] | None = None) -> None:
     det.add_argument("--det-batch-size", type=int, default=16)
     det.add_argument("--det-lr", type=float, default=1e-3)
     det.add_argument("--det-num-classes", type=int, default=1)
-    det.add_argument("--det-input-size", nargs=2, type=int, default=[640, 640], metavar=("W", "H"))
+    det.add_argument("--det-input-size", nargs=2, type=int, default=[960, 960], metavar=("W", "H"))
     det.add_argument("--det-pretrained", default="weights/yolox_m.pth", help="Backbone checkpoint for fine-tuning")
+    det.add_argument("--det-resume", default=None, help="Resume training from checkpoint (overrides --det-pretrained)")
     det.add_argument("--det-exp-name", default="yolox-m", help="YOLOX experiment variant (must match --det-pretrained)")
-    det.add_argument("--det-patience", type=int, default=5, help="Early stopping patience (0 = disabled)")
+    det.add_argument("--det-patience", type=int, default=10, help="Early stopping patience (0 = disabled)")
+    det.add_argument("--det-no-mosaic-epochs", type=int, default=50, help="Disable mosaic for the final N epochs (0 = always on)")
+    det.add_argument(
+        "--det-no-augment",
+        action="store_true",
+        help="Disable detector train-time augmentation (mosaic, scale jitter, HSV jitter, and flips)",
+    )
+    det.add_argument(
+        "--det-positive-images-only",
+        action="store_true",
+        help="Use only training images that contain at least one traffic-light annotation",
+    )
 
     # ---- classifier ----
     cls = parser.add_argument_group("classifier")

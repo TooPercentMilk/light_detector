@@ -17,6 +17,22 @@ from torch.utils.data import Dataset
 logger = logging.getLogger(__name__)
 
 
+def _positive_image_ids(coco) -> set[int]:
+    """Return image IDs that contain at least one valid annotation."""
+    valid_cat_ids = set(coco.getCatIds())
+    image_ids: set[int] = set()
+
+    for ann in coco.dataset.get("annotations", []):
+        bbox = ann.get("bbox", [])
+        if len(bbox) < 4 or bbox[2] <= 0 or bbox[3] <= 0:
+            continue
+        if ann.get("category_id") not in valid_cat_ids:
+            continue
+        image_ids.add(ann["image_id"])
+
+    return image_ids
+
+
 # ------------------------------------------------------------------
 # Lightweight COCO val dataset (no dependency on yolox.data.COCODataset)
 # ------------------------------------------------------------------
@@ -33,6 +49,8 @@ class _COCOValDataset(Dataset):
         json_file: str,
         name: str = "val",
         img_size: Tuple[int, int] = (640, 640),
+        image_ids: list[int] | None = None,
+        positive_images_only: bool = False,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_dir = self.data_dir / name
@@ -42,7 +60,23 @@ class _COCOValDataset(Dataset):
 
         ann_path = self.data_dir / "annotations" / json_file
         self.coco = COCO(str(ann_path))
-        self.img_ids: List[int] = sorted(self.coco.getImgIds())
+        all_img_ids: List[int] = sorted(self.coco.getImgIds())
+        if positive_images_only:
+            positive_ids = _positive_image_ids(self.coco)
+            filtered_img_ids = [img_id for img_id in all_img_ids if img_id in positive_ids]
+            logger.info(
+                "Using positive-only %s split for evaluation: %d -> %d images",
+                name,
+                len(all_img_ids),
+                len(filtered_img_ids),
+            )
+            all_img_ids = filtered_img_ids
+
+        if image_ids is not None:
+            image_id_set = set(image_ids)
+            all_img_ids = [img_id for img_id in all_img_ids if img_id in image_id_set]
+
+        self.img_ids = all_img_ids
         self.class_ids: List[int] = sorted(self.coco.getCatIds())
 
     def __len__(self) -> int:
@@ -97,6 +131,7 @@ def evaluate(
     batch_size: int = 8,
     device: str | None = None,
     image_ids: list[int] | None = None,
+    positive_images_only: bool = False,
 ) -> Dict[str, float]:
     """Evaluate a detector on a COCO-format dataset.
 
@@ -145,7 +180,13 @@ def evaluate(
         json_file="instances_val.json",
         name="val",
         img_size=input_size,
+        image_ids=image_ids,
+        positive_images_only=positive_images_only,
     )
+    if len(val_dataset) == 0:
+        logger.warning("Validation dataset is empty after image filtering")
+        return {"mAP": 0.0, "mAP_50": 0.0, "mAP_75": 0.0}
+
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=batch_size,
@@ -222,8 +263,7 @@ def evaluate(
     coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
     if iou_thresholds is not None:
         coco_eval.params.iouThrs = np.array(iou_thresholds)
-    if image_ids is not None:
-        coco_eval.params.imgIds = image_ids
+    coco_eval.params.imgIds = list(val_dataset.img_ids)
 
     coco_eval.evaluate()
     coco_eval.accumulate()

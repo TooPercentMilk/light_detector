@@ -70,3 +70,26 @@ for det in detections:
 ```
 
 This maps detection boxes back to original image coordinates before tracking and ROI classification.
+
+---
+
+## 6. Detector data augmentation reduced validation performance
+
+**Context:** Detector training initially used a YOLOX-style augmentation stack, then added mosaic cooldown via `--det-no-mosaic-epochs` to reduce the train/inference mismatch near the end of training.
+
+**Tried:** The detector training pipeline applied these augmentations from `detector/augmentations.py`:
+- 4-image mosaic composition
+- Random scale jitter
+- Random crop / translate after mosaic
+- HSV color jitter
+- Horizontal flip
+
+Even with mosaic disabled for the final epochs, validation performance remained worse than training without augmentation.
+
+**Resolution:** Added a detector training flag to disable augmentation entirely:
+
+```bash
+python scripts/train.py --target detector --dataset data/coco_tl --det-no-augment
+```
+
+The augmentation code is still retained for visualization and future experiments, but it was abandoned as the default training approach for this dataset because it consistently reduced performance.
