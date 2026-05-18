@@ -3,7 +3,7 @@ detector:
   model_path: "runs/train/detector/best.pth"
   device: "cuda"
   input_size: [960, 960]
-  confidence_threshold: 0.2
+  confidence_threshold: 0.1
   nms_threshold: 0.45
   num_classes: 1
   exp_name: "yolox-m"

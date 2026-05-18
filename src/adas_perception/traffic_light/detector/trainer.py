@@ -221,6 +221,8 @@ class YoloxTrainer:
         no_mosaic_epochs: int = 15,
         augment: bool = True,
         positive_images_only: bool = False,
+        val_every: int = 1,
+        classifier_config: dict | None = None,
     ) -> None:
         """Run the training loop.
 
@@ -357,6 +359,16 @@ class YoloxTrainer:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Optionally load the classifier for per-epoch e2e accuracy monitoring.
+        classifier = (
+            self._load_classifier(classifier_config, str(device))
+            if classifier_config
+            else None
+        )
+
+        # When val_every > 0, best.pth is saved/patience tracked by val mAP_50.
+        # When val_every == 0, fall back to training-loss tracking (old behaviour).
+        best_val_map50 = -1.0
         best_loss = float("inf")
         epochs_no_improve = 0
 
@@ -414,21 +426,59 @@ class YoloxTrainer:
             avg = epoch_loss / len(loader)
             logger.info("Epoch %d/%d — avg_loss=%.4f", epoch + 1, epochs, avg)
 
-            # early stopping based on training loss
-            if avg < best_loss:
-                best_loss = avg
-                epochs_no_improve = 0
-                best_path = self.output_dir / "best.pth"
-                torch.save({"model": model.state_dict(), "epoch": epoch + 1}, best_path)
-                logger.info("New best loss — saved %s", best_path)
-            else:
-                epochs_no_improve += 1
-
-            if patience > 0 and epochs_no_improve >= patience:
-                logger.info(
-                    "Early stopping: no improvement for %d epochs", patience
+            # ---- validation & early stopping ----
+            if val_every > 0 and (epoch + 1) % val_every == 0:
+                val_metrics = self._eval_val(
+                    model=model,
+                    dataset_path=dataset_path,
+                    input_size=input_size,
+                    device=str(device),
+                    batch_size=batch_size,
+                    positive_images_only=positive_images_only,
+                    classifier=classifier,
                 )
-                break
+                val_map50 = val_metrics.get("mAP_50", 0.0)
+                e2e = val_metrics.get("e2e_accuracy")
+                log_parts = [
+                    f"Epoch {epoch + 1}/{epochs}",
+                    f"train_loss={avg:.4f}",
+                    f"val_mAP_50={val_map50:.4f}",
+                    f"val_mAP={val_metrics.get('mAP', 0.0):.4f}",
+                ]
+                if e2e is not None:
+                    log_parts.append(f"e2e_acc={e2e * 100:.1f}%")
+                logger.info(" | ".join(log_parts))
+
+                if val_map50 > best_val_map50:
+                    best_val_map50 = val_map50
+                    epochs_no_improve = 0
+                    best_path = self.output_dir / "best.pth"
+                    torch.save({"model": model.state_dict(), "epoch": epoch + 1}, best_path)
+                    logger.info("New best val_mAP_50=%.4f — saved %s", val_map50, best_path)
+                else:
+                    epochs_no_improve += 1
+                    if patience > 0 and epochs_no_improve >= patience:
+                        logger.info(
+                            "Early stopping: val mAP_50 did not improve for %d epochs",
+                            patience,
+                        )
+                        break
+            else:
+                # val_every == 0: use training loss for best.pth and patience.
+                if avg < best_loss:
+                    best_loss = avg
+                    epochs_no_improve = 0
+                    best_path = self.output_dir / "best.pth"
+                    torch.save({"model": model.state_dict(), "epoch": epoch + 1}, best_path)
+                    logger.info("New best train_loss=%.4f — saved %s", avg, best_path)
+                else:
+                    epochs_no_improve += 1
+                    if patience > 0 and epochs_no_improve >= patience:
+                        logger.info(
+                            "Early stopping: train loss did not improve for %d epochs",
+                            patience,
+                        )
+                        break
 
             # periodic checkpoint
             save_interval = max(1, epochs // 5)
@@ -443,3 +493,199 @@ class YoloxTrainer:
         final_path = self.output_dir / "yolox_tl.pth"
         torch.save({"model": model.state_dict(), "epoch": epochs}, final_path)
         logger.info("Training complete — %s", final_path)
+
+    # ------------------------------------------------------------------
+    # Validation helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_classifier(classifier_config: dict, device: str):
+        """Load a StateClassifier for e2e monitoring. Returns None on failure."""
+        try:
+            from adas_perception.traffic_light.config import ClassifierConfig
+            from adas_perception.traffic_light.state.classifier import StateClassifier
+
+            cfg = ClassifierConfig(
+                **{k: v for k, v in classifier_config.items()
+                   if k in {"type", "model_path", "device", "input_size", "classes"}}
+            )
+            clf = StateClassifier(cfg)
+            clf.load_model(cfg.model_path, device)
+            logger.info("Loaded classifier for e2e monitoring: %s", cfg.model_path)
+            return clf
+        except Exception as exc:
+            logger.warning("Could not load classifier for e2e monitoring: %s", exc)
+            return None
+
+    def _eval_val(
+        self,
+        model: torch.nn.Module,
+        dataset_path: Path,
+        input_size: tuple,
+        device: str,
+        batch_size: int,
+        positive_images_only: bool,
+        classifier=None,
+    ) -> dict:
+        """Run detector COCO mAP on the val split, plus optional e2e accuracy."""
+        from adas_perception.traffic_light.detector.evaluator import evaluate as det_evaluate
+
+        det_metrics = det_evaluate(
+            model=model,
+            dataset_path=str(dataset_path),
+            input_size=input_size,
+            conf_threshold=0.01,  # COCO-standard: sweep score thresholds
+            nms_threshold=0.65,
+            batch_size=batch_size,
+            device=device,
+            positive_images_only=positive_images_only,
+        )
+
+        if classifier is not None:
+            e2e = self._compute_e2e_accuracy(
+                model=model,
+                dataset_path=dataset_path,
+                input_size=input_size,
+                device=device,
+                classifier=classifier,
+                positive_images_only=positive_images_only,
+                conf_threshold=self.model_config.get("conf_threshold", 0.25),
+                nms_threshold=self.model_config.get("nms_threshold", 0.45),
+            )
+            det_metrics["e2e_accuracy"] = e2e
+
+        model.train()
+        return det_metrics
+
+    def _compute_e2e_accuracy(
+        self,
+        model: torch.nn.Module,
+        dataset_path: Path,
+        input_size: tuple,
+        device: str,
+        classifier,
+        positive_images_only: bool,
+        conf_threshold: float = 0.1,
+        nms_threshold: float = 0.45,
+        iou_threshold: float = 0.5,
+    ) -> float:
+        """Per-frame detect+classify e2e accuracy on val (no tracker)."""
+        import json
+        from collections import defaultdict
+
+        from yolox.utils import postprocess
+
+        _TAG_TO_CLASS: dict[str, int] = {
+            "go": 2, "goLeft": 2, "goForward": 2,
+            "stop": 0, "stopLeft": 0,
+            "warning": 1, "warningLeft": 1,
+        }
+        state_to_idx = {"red": 0, "yellow": 1, "green": 2, "off": 3}
+
+        ann_path = dataset_path / "annotations" / "instances_val.json"
+        with open(ann_path, "r", encoding="utf-8") as f:
+            coco = json.load(f)
+
+        id_to_file = {img["id"]: img["file_name"] for img in coco["images"]}
+        anns_by_img: dict = defaultdict(list)
+        for ann in coco["annotations"]:
+            anns_by_img[ann["image_id"]].append(ann)
+
+        if positive_images_only:
+            positive_ids = {
+                ann["image_id"] for ann in coco["annotations"]
+                if len(ann.get("bbox", [])) == 4
+                and ann["bbox"][2] > 0 and ann["bbox"][3] > 0
+            }
+            eval_ids = [img_id for img_id in sorted(id_to_file) if img_id in positive_ids]
+        else:
+            eval_ids = sorted(id_to_file.keys())
+
+        image_dir = dataset_path / "val"
+        th, tw = input_size
+        use_amp = device != "cpu"
+        total_gt = 0
+        total_correct = 0
+
+        model.eval()
+        with torch.no_grad():
+            for img_id in eval_ids:
+                fname = id_to_file[img_id]
+                image = cv2.imread(str(image_dir / fname))
+                if image is None:
+                    continue
+
+                ih, iw = image.shape[:2]
+                scale = min(tw / iw, th / ih)
+                new_w, new_h = int(iw * scale), int(ih * scale)
+                canvas = np.full((th, tw, 3), 114, dtype=np.uint8)
+                canvas[:new_h, :new_w] = cv2.resize(image, (new_w, new_h))
+                img_t = canvas[:, :, ::-1].transpose(2, 0, 1).copy().astype(np.float32)
+                img_tensor = torch.from_numpy(img_t).unsqueeze(0).to(device)
+
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    raw = model(img_tensor)
+                dets = postprocess(raw, 1, conf_threshold, nms_threshold)
+
+                gt_anns = anns_by_img.get(img_id, [])
+                gt_boxes: list = []
+                gt_classes: list = []
+                for ann in gt_anns:
+                    tag = ann.get("attributes", {}).get("lisa_tag")
+                    if tag not in _TAG_TO_CLASS:
+                        continue
+                    x, y, w, h = ann["bbox"]
+                    if w <= 0 or h <= 0:
+                        continue
+                    gt_boxes.append([x, y, x + w, y + h])
+                    gt_classes.append(_TAG_TO_CLASS[tag])
+                total_gt += len(gt_boxes)
+
+                if dets[0] is None or not gt_boxes:
+                    continue
+
+                output = dets[0].cpu()
+                pred_boxes = output[:, :4] / scale  # xyxy in original image coords
+                gt_arr = np.array(gt_boxes, dtype=np.float32)
+                pred_arr = pred_boxes.numpy()
+
+                # Pairwise IoU
+                x1 = np.maximum(pred_arr[:, 0:1], gt_arr[:, 0])
+                y1 = np.maximum(pred_arr[:, 1:2], gt_arr[:, 1])
+                x2 = np.minimum(pred_arr[:, 2:3], gt_arr[:, 2])
+                y2 = np.minimum(pred_arr[:, 3:4], gt_arr[:, 3])
+                inter = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
+                area_p = (pred_arr[:, 2] - pred_arr[:, 0]) * (pred_arr[:, 3] - pred_arr[:, 1])
+                area_g = (gt_arr[:, 2] - gt_arr[:, 0]) * (gt_arr[:, 3] - gt_arr[:, 1])
+                union = area_p[:, None] + area_g[None, :] - inter
+                ious = inter / np.maximum(union, 1e-6)
+
+                # Greedy match (highest IoU first)
+                matched_gt: set = set()
+                matched_pred: set = set()
+                order = np.dstack(
+                    np.unravel_index(np.argsort(-ious, axis=None), ious.shape)
+                )[0]
+                for p_idx, g_idx in order:
+                    p_idx, g_idx = int(p_idx), int(g_idx)
+                    if p_idx in matched_pred or g_idx in matched_gt:
+                        continue
+                    if ious[p_idx, g_idx] < iou_threshold:
+                        break
+                    matched_pred.add(p_idx)
+                    matched_gt.add(g_idx)
+
+                    x1b = max(0, int(pred_boxes[p_idx, 0]))
+                    y1b = max(0, int(pred_boxes[p_idx, 1]))
+                    x2b = min(iw, int(pred_boxes[p_idx, 2]))
+                    y2b = min(ih, int(pred_boxes[p_idx, 3]))
+                    roi = image[y1b:y2b, x1b:x2b]
+                    if roi.size == 0:
+                        continue
+                    pred_state, _ = classifier.classify(roi)
+                    pred_cls = state_to_idx.get(pred_state.value, -1)
+                    if pred_cls == gt_classes[g_idx]:
+                        total_correct += 1
+
+        model.train()
+        return total_correct / total_gt if total_gt else 0.0

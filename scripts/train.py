@@ -58,17 +58,28 @@ def train_detector(args: argparse.Namespace) -> Path:
         pretrained = args.det_resume
         logger.info("Resuming from checkpoint: %s", args.det_resume)
 
+    dev = args.device or ("cuda" if _cuda_available() else "cpu")
     trainer = YoloxTrainer(
         model_config={
             "num_classes": args.det_num_classes,
             "input_size": args.det_input_size,
-            "device": args.device or ("cuda" if _cuda_available() else "cpu"),
+            "device": dev,
             "pretrained_ckpt": pretrained,
             "exp_name": args.det_exp_name,
             "data_num_workers": args.num_workers,
+            "conf_threshold": 0.1,
+            "nms_threshold": 0.45,
         },
         output_dir=str(output_dir),
     )
+
+    # Auto-detect classifier weights for per-epoch e2e accuracy monitoring.
+    classifier_best = args.output_dir / "classifier" / "best.pth"
+    classifier_config = None
+    if classifier_best.is_file():
+        classifier_config = {"model_path": str(classifier_best), "device": dev}
+        logger.info("Will monitor e2e accuracy using classifier: %s", classifier_best)
+
     trainer.train(
         dataset_path=args.dataset,
         epochs=args.det_epochs,
@@ -78,6 +89,8 @@ def train_detector(args: argparse.Namespace) -> Path:
         no_mosaic_epochs=args.det_no_mosaic_epochs,
         augment=not args.det_no_augment,
         positive_images_only=args.det_positive_images_only,
+        val_every=args.det_val_every,
+        classifier_config=classifier_config,
     )
 
     final = output_dir / "yolox_tl.pth"
@@ -181,6 +194,12 @@ def main(argv: list[str] | None = None) -> None:
         "--det-positive-images-only",
         action="store_true",
         help="Use only training images that contain at least one traffic-light annotation",
+    )
+    det.add_argument(
+        "--det-val-every",
+        type=int,
+        default=1,
+        help="Run val mAP evaluation every N epochs for early stopping (0 = use train loss instead)",
     )
 
     # ---- classifier ----
