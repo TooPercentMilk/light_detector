@@ -59,6 +59,14 @@ def train_detector(args: argparse.Namespace) -> Path:
         logger.info("Resuming from checkpoint: %s", args.det_resume)
 
     dev = args.device or ("cuda" if _cuda_available() else "cpu")
+    mosaic_prob = 1.0
+    scale_jitter_range = (0.5, 1.5)
+    flip_prob = 0.5
+    if args.det_hsv_only:
+        mosaic_prob = 0.0
+        scale_jitter_range = (1.0, 1.0)
+        flip_prob = 0.0
+
     trainer = YoloxTrainer(
         model_config={
             "num_classes": args.det_num_classes,
@@ -67,8 +75,11 @@ def train_detector(args: argparse.Namespace) -> Path:
             "pretrained_ckpt": pretrained,
             "exp_name": args.det_exp_name,
             "data_num_workers": args.num_workers,
-            "conf_threshold": 0.1,
+            "conf_threshold": 0.05,
             "nms_threshold": 0.45,
+            "mosaic_prob": mosaic_prob,
+            "scale_jitter_range": scale_jitter_range,
+            "flip_prob": flip_prob,
         },
         output_dir=str(output_dir),
     )
@@ -189,6 +200,11 @@ def main(argv: list[str] | None = None) -> None:
         "--det-no-augment",
         action="store_true",
         help="Disable detector train-time augmentation (mosaic, scale jitter, HSV jitter, and flips)",
+    )
+    det.add_argument(
+        "--det-hsv-only",
+        action="store_true",
+        help="Use detector HSV jitter only; disable mosaic, scale jitter/crop, and flips",
     )
     det.add_argument(
         "--det-positive-images-only",

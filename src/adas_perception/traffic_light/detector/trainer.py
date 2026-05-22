@@ -309,6 +309,14 @@ class YoloxTrainer:
             max_labels=50,
             augment=augment,
             positive_images_only=positive_images_only,
+            mosaic_prob=self.model_config.get("mosaic_prob", 1.0),
+            scale_jitter_range=tuple(
+                self.model_config.get("scale_jitter_range", (0.5, 1.5))
+            ),
+            hsv_hue=self.model_config.get("hsv_hue", 0.015),
+            hsv_sat=self.model_config.get("hsv_sat", 0.7),
+            hsv_val=self.model_config.get("hsv_val", 0.4),
+            flip_prob=self.model_config.get("flip_prob", 0.5),
         )
         num_workers = self.model_config.get("data_num_workers", 4)
         loader = torch.utils.data.DataLoader(

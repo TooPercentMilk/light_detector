@@ -1,0 +1,375 @@
+{
+  "parameters": {
+    "config": "configs\\val_best.yaml",
+    "dataset": "data\\coco_tl",
+    "detector_weights": "runs/train/detector/best.pth",
+    "input_size": [
+      960,
+      960
+    ],
+    "nms_threshold": 0.45,
+    "confidence_min": 0.01,
+    "confidence_max": 0.25,
+    "iou_threshold": 0.5,
+    "tiny_side_threshold": 16.0,
+    "distant_side_threshold": 12.0,
+    "size_bin_edges": [
+      0.0,
+      8.0,
+      12.0,
+      16.0,
+      24.0,
+      32.0,
+      48.0,
+      96.0,
+      1000000000.0
+    ],
+    "edge_margin_pct": 0.05,
+    "edge_margin_px": 8.0,
+    "overlap_min_area_ratio": 0.1,
+    "poor_iou_threshold": 0.6,
+    "blur_crop_padding": 0.5,
+    "skip_blur": false,
+    "positive_images_only": false,
+    "max_images": null,
+    "sequences": null,
+    "num_images": 9053
+  },
+  "counts": {
+    "num_images": 9053,
+    "baseline_gt_count": 26414,
+    "total_detections_at_min_conf": 26627,
+    "low_conf_detection_count": 8175,
+    "low_conf_matched_count": 3365,
+    "low_conf_unmatched_count": 4810,
+    "low_conf_match_rate": 0.41162079510703364
+  },
+  "answers": {
+    "tiny_lights": {
+      "low_conf_count": 1026,
+      "low_conf_total": 3365,
+      "low_conf_rate": 0.3049034175334324,
+      "baseline_count": 5093,
+      "baseline_total": 26414,
+      "baseline_rate": 0.19281441659725904,
+      "enrichment_vs_baseline": 1.5813310172252275
+    },
+    "distant_proxy": {
+      "low_conf_count": 351,
+      "low_conf_total": 3365,
+      "low_conf_rate": 0.10430906389301635,
+      "baseline_count": 1827,
+      "baseline_total": 26414,
+      "baseline_rate": 0.0691678655258575,
+      "enrichment_vs_baseline": 1.5080567124631272
+    },
+    "partial_occlusion_proxy": {
+      "note": "LISA COCO annotations do not include occlusion labels. This uses clipped-at-image-edge and overlap-with-neighbor-GT proxies only.",
+      "clipped_edge": {
+        "low_conf_count": 13,
+        "low_conf_total": 3365,
+        "low_conf_rate": 0.003863298662704309,
+        "baseline_count": 189,
+        "baseline_total": 26414,
+        "baseline_rate": 0.007155296433709397,
+        "enrichment_vs_baseline": 0.5399215390300086
+      },
+      "overlaps_other_gt_proxy": {
+        "low_conf_count": 95,
+        "low_conf_total": 3365,
+        "low_conf_rate": 0.02823179791976226,
+        "baseline_count": 864,
+        "baseline_total": 26414,
+        "baseline_rate": 0.0327099265541001,
+        "enrichment_vs_baseline": 0.8630957294590281
+      }
+    },
+    "motion_blur_proxy": {
+      "note": "Uses variance of Laplacian on a padded GT crop; lower scores are blurrier. This is a blur/sharpness proxy, not a true motion-label.",
+      "threshold": 70.12046206710953,
+      "threshold_source": "baseline_p20",
+      "low_blur": {
+        "low_conf_count": 838,
+        "low_conf_total": 3365,
+        "low_conf_rate": 0.24903417533432393,
+        "baseline_count": 5283,
+        "baseline_total": 26414,
+        "baseline_rate": 0.2000075717422579,
+        "enrichment_vs_baseline": 1.2451237378915072
+      },
+      "low_conf_blur_summary": {
+        "count": 3365,
+        "min": 5.1899314200496,
+        "p10": 38.962298042252215,
+        "p25": 71.3740641301868,
+        "median": 289.6018812391493,
+        "mean": 477.97658438347923,
+        "p75": 741.5112292616827,
+        "p90": 1190.1172583500227,
+        "max": 2810.960284636488
+      },
+      "baseline_blur_summary": {
+        "count": 26414,
+        "min": 1.3034645641735727,
+        "p10": 44.60313847104004,
+        "p25": 89.10287217916435,
+        "median": 231.16157710757778,
+        "mean": 401.3502066070651,
+        "p75": 506.1288819556357,
+        "p90": 1006.513102133645,
+        "max": 4512.900617283951
+      }
+    },
+    "color_distribution": {
+      "rows": [
+        {
+          "name": "red",
+          "low_conf_matches": 1919,
+          "low_conf_share": 0.5702823179791976,
+          "baseline_gt": 12875,
+          "baseline_share": 0.48743090785189674,
+          "enrichment_vs_baseline": 1.1699757007458271
+        },
+        {
+          "name": "yellow",
+          "low_conf_matches": 44,
+          "low_conf_share": 0.013075780089153046,
+          "baseline_gt": 981,
+          "baseline_share": 0.03713939577496782,
+          "enrichment_vs_baseline": 0.35207304309366827
+        },
+        {
+          "name": "green",
+          "low_conf_matches": 1402,
+          "low_conf_share": 0.41664190193164935,
+          "baseline_gt": 12558,
+          "baseline_share": 0.4754296963731355,
+          "enrichment_vs_baseline": 0.8763480807152879
+        },
+        {
+          "name": "unknown",
+          "low_conf_matches": 0,
+          "low_conf_share": 0.0,
+          "baseline_gt": 0,
+          "baseline_share": 0.0,
+          "enrichment_vs_baseline": null
+        }
+      ],
+      "max_abs_delta_from_equal_rgb": 0.32025755324418026,
+      "roughly_equal_rgb_proxy": false
+    },
+    "image_edges": {
+      "low_conf_count": 35,
+      "low_conf_total": 3365,
+      "low_conf_rate": 0.010401188707280832,
+      "baseline_count": 577,
+      "baseline_total": 26414,
+      "baseline_rate": 0.021844476414022866,
+      "enrichment_vs_baseline": 0.4761473111163187
+    },
+    "box_quality": {
+      "poor_box_proxy": {
+        "low_conf_count": 1299,
+        "low_conf_total": 3365,
+        "low_conf_rate": 0.3860326894502229,
+        "baseline_count": 0,
+        "baseline_total": 0,
+        "baseline_rate": 0.0,
+        "enrichment_vs_baseline": null
+      },
+      "iou_summary": {
+        "count": 3365,
+        "min": 0.5001323819160461,
+        "p10": 0.5344103455543519,
+        "p25": 0.571262776851654,
+        "median": 0.6366851329803467,
+        "mean": 0.6567138023574852,
+        "p75": 0.7342168092727661,
+        "p90": 0.810384476184845,
+        "max": 0.9490807056427002
+      },
+      "iou_buckets": [
+        {
+          "name": "0.50-0.60",
+          "low_conf_matches": 1299,
+          "low_conf_share": 0.3860326894502229,
+          "baseline_gt": 0,
+          "baseline_share": 0.0,
+          "enrichment_vs_baseline": null
+        },
+        {
+          "name": "0.60-0.75",
+          "low_conf_matches": 1332,
+          "low_conf_share": 0.39583952451708765,
+          "baseline_gt": 0,
+          "baseline_share": 0.0,
+          "enrichment_vs_baseline": null
+        },
+        {
+          "name": "0.75-0.90",
+          "low_conf_matches": 711,
+          "low_conf_share": 0.2112927191679049,
+          "baseline_gt": 0,
+          "baseline_share": 0.0,
+          "enrichment_vs_baseline": null
+        },
+        {
+          "name": "0.90-1.00",
+          "low_conf_matches": 23,
+          "low_conf_share": 0.006835066864784547,
+          "baseline_gt": 0,
+          "baseline_share": 0.0,
+          "enrichment_vs_baseline": null
+        }
+      ],
+      "center_error_norm_summary": {
+        "count": 3365,
+        "min": 0.0004571420109302303,
+        "p10": 0.022666995210809435,
+        "p25": 0.040174610416292486,
+        "median": 0.06778354330202176,
+        "mean": 0.08260200877682078,
+        "p75": 0.1160279697190779,
+        "p90": 0.17495467853099791,
+        "max": 0.27917197329690746
+      },
+      "area_ratio_pred_to_gt_summary": {
+        "count": 3365,
+        "min": 0.5004386949513889,
+        "p10": 0.5656363100744785,
+        "p25": 0.6926287330332257,
+        "median": 0.8508499765768647,
+        "mean": 0.92067968915368,
+        "p75": 1.0850247911635846,
+        "p90": 1.35931343797047,
+        "max": 1.997748576104641
+      }
+    },
+    "lisa_sequences": {
+      "rows": [
+        {
+          "name": "nightSequence1",
+          "low_conf_matches": 2193,
+          "low_conf_share": 0.6517087667161962,
+          "baseline_gt": 18514,
+          "baseline_share": 0.7009161808132052,
+          "enrichment_vs_baseline": 0.9297955797797128
+        },
+        {
+          "name": "daySequence1",
+          "low_conf_matches": 1172,
+          "low_conf_share": 0.34829123328380385,
+          "baseline_gt": 7900,
+          "baseline_share": 0.2990838191867949,
+          "enrichment_vs_baseline": 1.1645271691086576
+        }
+      ],
+      "overrepresented_sequences": [],
+      "enrichment_threshold": 1.5,
+      "min_sequence_count": 5
+    },
+    "size_buckets": {
+      "rows": [
+        {
+          "name": "0-8",
+          "low_conf_matches": 83,
+          "low_conf_share": 0.024665676077265972,
+          "baseline_gt": 230,
+          "baseline_share": 0.008707503596577572,
+          "enrichment_vs_baseline": 2.832692034369145
+        },
+        {
+          "name": "8-12",
+          "low_conf_matches": 268,
+          "low_conf_share": 0.07964338781575037,
+          "baseline_gt": 1597,
+          "baseline_share": 0.06046036192927993,
+          "enrichment_vs_baseline": 1.3172826836350846
+        },
+        {
+          "name": "12-16",
+          "low_conf_matches": 675,
+          "low_conf_share": 0.20059435364041606,
+          "baseline_gt": 3266,
+          "baseline_share": 0.12364655107140153,
+          "enrichment_vs_baseline": 1.6223206543349509
+        },
+        {
+          "name": "16-24",
+          "low_conf_matches": 1236,
+          "low_conf_share": 0.3673105497771174,
+          "baseline_gt": 7988,
+          "baseline_share": 0.30241538578026805,
+          "enrichment_vs_baseline": 1.2145894919645441
+        },
+        {
+          "name": "24-32",
+          "low_conf_matches": 201,
+          "low_conf_share": 0.05973254086181278,
+          "baseline_gt": 5623,
+          "baseline_share": 0.2128795335806769,
+          "enrichment_vs_baseline": 0.28059315922531086
+        },
+        {
+          "name": "32-48",
+          "low_conf_matches": 118,
+          "low_conf_share": 0.035066864784546806,
+          "baseline_gt": 3662,
+          "baseline_share": 0.13863860074203074,
+          "enrichment_vs_baseline": 0.2529372382356688
+        },
+        {
+          "name": "48-96",
+          "low_conf_matches": 769,
+          "low_conf_share": 0.22852897473997028,
+          "baseline_gt": 4008,
+          "baseline_share": 0.15173771484818657,
+          "enrichment_vs_baseline": 1.5060789268417103
+        },
+        {
+          "name": ">=96",
+          "low_conf_matches": 15,
+          "low_conf_share": 0.004457652303120356,
+          "baseline_gt": 40,
+          "baseline_share": 0.0015143484515787082,
+          "enrichment_vs_baseline": 2.9436106983655272
+        }
+      ]
+    },
+    "score_decomposition": {
+      "score_summary": {
+        "count": 3365,
+        "min": 0.010007714852690697,
+        "p10": 0.014711478538811208,
+        "p25": 0.02222103625535965,
+        "median": 0.054382115602493286,
+        "mean": 0.08020302140158096,
+        "p75": 0.12513691186904907,
+        "p90": 0.19430255293846127,
+        "max": 0.24992047250270844
+      },
+      "objectness_summary": {
+        "count": 3365,
+        "min": 0.012915177270770073,
+        "p10": 0.021372024342417716,
+        "p25": 0.03274792805314064,
+        "median": 0.08141171187162399,
+        "mean": 0.12005377116226999,
+        "p75": 0.18721356987953186,
+        "p90": 0.28870384097099305,
+        "max": 0.42937207221984863
+      },
+      "class_confidence_summary": {
+        "count": 3365,
+        "min": 0.48906081914901733,
+        "p10": 0.5952298402786255,
+        "p25": 0.6316540241241455,
+        "median": 0.6775941252708435,
+        "mean": 0.6767356703752572,
+        "p75": 0.7251044511795044,
+        "p90": 0.7610495686531067,
+        "max": 0.8238499760627747
+      }
+    }
+  }
+}
