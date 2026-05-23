@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 from pathlib import Path
 from typing import List, Tuple
@@ -49,6 +50,8 @@ class _COCODetectionDataset(Dataset):
         hsv_sat: float = 0.7,
         hsv_val: float = 0.4,
         flip_prob: float = 0.5,
+        small_light_flip: bool = False,
+        small_light_flip_range: Tuple[float, float] = (8.0, 24.0),
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_dir = self.data_dir / split
@@ -62,7 +65,20 @@ class _COCODetectionDataset(Dataset):
         self.hsv_hue = hsv_hue
         self.hsv_sat = hsv_sat
         self.hsv_val = hsv_val
+        min_small_light, max_small_light = small_light_flip_range
+        if min_small_light < 0 or max_small_light <= min_small_light:
+            raise ValueError(
+                "small_light_flip_range must be an increasing non-negative "
+                "(min, max) pair"
+            )
+
         self.flip_prob = flip_prob
+        self.small_light_flip = small_light_flip
+        self.small_light_flip_range = (
+            float(min_small_light),
+            float(max_small_light),
+        )
+        self.small_light_flip_count = 0
 
         ann_path = self.data_dir / "annotations" / json_file
         with open(ann_path, "r", encoding="utf-8") as f:
@@ -98,16 +114,52 @@ class _COCODetectionDataset(Dataset):
                 len(self.img_ids),
             )
 
-    def __len__(self) -> int:
-        return len(self.img_ids)
+        self.samples: list[tuple[int, bool]] = [
+            (img_id, False) for img_id in self.img_ids
+        ]
+        if self.small_light_flip:
+            min_size, max_size = self.small_light_flip_range
+            small_flip_ids = [
+                img_id
+                for img_id in self.img_ids
+                if self._has_light_in_size_range(img_id, min_size, max_size)
+            ]
+            self.samples.extend((img_id, True) for img_id in small_flip_ids)
+            self.small_light_flip_count = len(small_flip_ids)
+            logger.info(
+                "Added runtime small-light horizontal flips for %s split: "
+                "%d virtual samples (sqrt(area) in [%.1f, %.1f) px)",
+                split,
+                self.small_light_flip_count,
+                min_size,
+                max_size,
+            )
 
-    def _load_raw(self, idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _has_light_in_size_range(
+        self,
+        img_id: int,
+        min_size: float,
+        max_size: float,
+    ) -> bool:
+        for ann in self.anns_by_img.get(img_id, []):
+            _, _, w, h = ann["bbox"]
+            size = math.sqrt(max(0.0, float(w)) * max(0.0, float(h)))
+            if min_size <= size < max_size:
+                return True
+        return False
+
+    def _load_raw_image(
+        self,
+        img_id: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Load a single image with bboxes and class ids (no augmentation).
 
         Returns ``(image, bboxes, class_ids)`` where *bboxes* is ``(N, 4)``
         ``[x1, y1, x2, y2]`` and *class_ids* is ``(N,)``.
         """
-        img_id = self.img_ids[idx]
         info = self.images[img_id]
         img_path = self.image_dir / info["file_name"]
 
@@ -132,13 +184,23 @@ class _COCODetectionDataset(Dataset):
         class_ids = np.array(class_ids, dtype=np.float32)
         return image, bboxes, class_ids
 
+    def _load_raw(self, idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        img_id, force_hflip = self.samples[idx]
+        image, bboxes, class_ids = self._load_raw_image(img_id)
+        if force_hflip:
+            image, bboxes = horizontal_flip(image, bboxes)
+        return image, bboxes, class_ids
+
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         th, tw = self.input_size
+        _, force_hflip = self.samples[idx]
 
-        if self.augment and random.random() < self.mosaic_prob:
+        if not force_hflip and self.augment and random.random() < self.mosaic_prob:
             # --- mosaic: combine 4 random images ---
-            indices = [idx] + [random.randint(0, len(self) - 1) for _ in range(3)]
-            imgs, bbs, cids = zip(*(self._load_raw(i) for i in indices))
+            img_ids = [self.samples[idx][0]] + [
+                random.choice(self.img_ids) for _ in range(3)
+            ]
+            imgs, bbs, cids = zip(*(self._load_raw_image(i) for i in img_ids))
             image, bboxes, class_ids = mosaic(
                 list(imgs), list(bbs), list(cids), self.input_size,
             )
@@ -155,7 +217,11 @@ class _COCODetectionDataset(Dataset):
 
         # --- per-image augmentations (photometric + flip) ---
         if self.augment:
-            if len(bboxes) > 0 and random.random() < self.flip_prob:
+            if (
+                not force_hflip
+                and len(bboxes) > 0
+                and random.random() < self.flip_prob
+            ):
                 image, bboxes = horizontal_flip(image, bboxes)
             image = hsv_jitter(
                 image, self.hsv_hue, self.hsv_sat, self.hsv_val,
@@ -317,6 +383,10 @@ class YoloxTrainer:
             hsv_sat=self.model_config.get("hsv_sat", 0.7),
             hsv_val=self.model_config.get("hsv_val", 0.4),
             flip_prob=self.model_config.get("flip_prob", 0.5),
+            small_light_flip=self.model_config.get("small_light_flip", False),
+            small_light_flip_range=tuple(
+                self.model_config.get("small_light_flip_range", (8.0, 24.0))
+            ),
         )
         num_workers = self.model_config.get("data_num_workers", 4)
         loader = torch.utils.data.DataLoader(

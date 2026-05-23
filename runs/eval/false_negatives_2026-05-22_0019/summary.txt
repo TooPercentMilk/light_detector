@@ -1,0 +1,44 @@
+FALSE NEGATIVE DETECTION REVIEW
+======================================
+Config: configs\val_best.yaml
+Dataset: data\coco_tl
+Detector weights: runs/train/detector/best.pth
+Images evaluated: 9053
+GT objects: 26414
+Detections at candidate confidence: 20278
+Detections at eval confidence: 18059
+Matched GT: 15853
+False negatives: 10561
+Recall at IoU >= 0.5: 60.02%
+
+Parameters
+Confidence threshold: 0.1
+Candidate confidence min: 0.01
+NMS threshold: 0.45
+Positive images only: False
+Sequences: None
+
+Miss reasons
+low_iou                         7874  ( 74.6%)
+no_candidate_detection          1876  ( 17.8%)
+below_confidence                 810  (  7.7%)
+duplicate_or_shared_detection       1  (  0.0%)
+
+By color
+green                           5479  ( 51.9%)
+red                             4511  ( 42.7%)
+yellow                           571  (  5.4%)
+
+By size bucket, sqrt(area) px
+16-24                           4274  ( 40.5%)
+12-16                           2837  ( 26.9%)
+8-12                            1572  ( 14.9%)
+24-32                            909  (  8.6%)
+48-96                            371  (  3.5%)
+32-48                            336  (  3.2%)
+0-8                              230  (  2.2%)
+>=96                              32  (  0.3%)
+
+By sequence
+nightSequence1                  7613  ( 72.1%)
+daySequence1                    2948  ( 27.9%)

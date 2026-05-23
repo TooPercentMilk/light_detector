@@ -18,6 +18,10 @@ Usage::
     python scripts/train.py --target detector --dataset data/coco_tl \
         --det-positive-images-only
 
+    # Detector only, append runtime hflip samples for images with 8-24px lights
+    python scripts/train.py --target detector --dataset data/coco_tl \
+        --det-small-light-flip
+
     # Resume detector training from checkpoint
     python scripts/train.py --target detector --dataset data/coco_tl \
         --det-resume runs/train/detector/best.pth --det-epochs 80
@@ -80,6 +84,8 @@ def train_detector(args: argparse.Namespace) -> Path:
             "mosaic_prob": mosaic_prob,
             "scale_jitter_range": scale_jitter_range,
             "flip_prob": flip_prob,
+            "small_light_flip": args.det_small_light_flip,
+            "small_light_flip_range": tuple(args.det_small_light_flip_range),
         },
         output_dir=str(output_dir),
     )
@@ -199,17 +205,33 @@ def main(argv: list[str] | None = None) -> None:
     det.add_argument(
         "--det-no-augment",
         action="store_true",
-        help="Disable detector train-time augmentation (mosaic, scale jitter, HSV jitter, and flips)",
+        help="Disable standard stochastic detector augmentation (mosaic, scale jitter, HSV jitter, and random flips)",
     )
     det.add_argument(
         "--det-hsv-only",
         action="store_true",
-        help="Use detector HSV jitter only; disable mosaic, scale jitter/crop, and flips",
+        help="Use detector HSV jitter only; disable mosaic, scale jitter/crop, and random flips",
     )
     det.add_argument(
         "--det-positive-images-only",
         action="store_true",
         help="Use only training images that contain at least one traffic-light annotation",
+    )
+    det.add_argument(
+        "--det-small-light-flip",
+        action="store_true",
+        help=(
+            "Append runtime horizontal-flip virtual samples for train images "
+            "with at least one traffic light in the configured size range"
+        ),
+    )
+    det.add_argument(
+        "--det-small-light-flip-range",
+        nargs=2,
+        type=float,
+        default=[8.0, 24.0],
+        metavar=("MIN_PX", "MAX_PX"),
+        help="Inclusive/exclusive sqrt(area) pixel range for --det-small-light-flip",
     )
     det.add_argument(
         "--det-val-every",
@@ -229,6 +251,10 @@ def main(argv: list[str] | None = None) -> None:
     cls.add_argument("--cls-patience", type=int, default=5, help="Early stopping patience (0 = disabled)")
 
     args = parser.parse_args(argv)
+    if args.det_small_light_flip_range[0] < 0:
+        parser.error("--det-small-light-flip-range MIN_PX must be non-negative")
+    if args.det_small_light_flip_range[1] <= args.det_small_light_flip_range[0]:
+        parser.error("--det-small-light-flip-range MAX_PX must be greater than MIN_PX")
 
     if args.target in ("detector", "both"):
         train_detector(args)

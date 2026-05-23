@@ -1,0 +1,83 @@
+{
+  "weights": {
+    "config": "configs/val_best.yaml",
+    "detector_weights": "runs/train/detector/best.pth",
+    "classifier_weights": "runs/train/classifier/best.pth"
+  },
+  "evaluation_mode": {
+    "positive_images_only": true
+  },
+  "detector": {
+    "total": {
+      "mAP": 0.2753201936366129,
+      "mAP_50": 0.6097618932518366,
+      "mAP_75": 0.22255527764436472
+    },
+    "daySequence1": {
+      "mAP": 0.267085449405948,
+      "mAP_50": 0.6556599589913682,
+      "mAP_75": 0.202833352737055
+    },
+    "nightSequence1": {
+      "mAP": 0.2821981680886434,
+      "mAP_50": 0.5931487710367692,
+      "mAP_75": 0.2353464629077806
+    }
+  },
+  "classifier": {
+    "total": {
+      "accuracy": 0.9963655637162111,
+      "red_precision": 0.9988342270925624,
+      "red_recall": 0.9982135922330098,
+      "red_f1": 0.9985238132235259,
+      "yellow_precision": 0.9436345966958212,
+      "yellow_recall": 0.9898063200815495,
+      "yellow_f1": 0.9661691542288559,
+      "green_precision": 0.9981626457900623,
+      "green_recall": 0.9949832775919732,
+      "green_f1": 0.996570425905248,
+      "macro_precision": 0.980210489859482,
+      "macro_recall": 0.9943343966355108,
+      "macro_f1": 0.9870877977858766,
+      "weighted_precision": 0.9964648564778885,
+      "weighted_recall": 0.9963655637162111,
+      "weighted_f1": 0.9963934823983307
+    },
+    "daySequence1": {
+      "accuracy": 0.9969620253164557,
+      "red_precision": 0.9982620785540494,
+      "red_recall": 0.9941156109380408,
+      "red_f1": 0.9961845300034685,
+      "yellow_precision": 1.0,
+      "yellow_recall": 0.9897260273972602,
+      "yellow_f1": 0.9948364888123925,
+      "green_precision": 0.9959864807773553,
+      "green_recall": 0.9991523627887264,
+      "green_f1": 0.9975669099756691,
+      "macro_precision": 0.9980828531104683,
+      "macro_recall": 0.9943313337080092,
+      "macro_f1": 0.9961959762638434,
+      "weighted_precision": 0.9969670060418973,
+      "weighted_recall": 0.9969620253164557,
+      "weighted_f1": 0.9969604569732179
+    },
+    "nightSequence1": {
+      "accuracy": 0.9961110510964676,
+      "red_precision": 0.998998998998999,
+      "red_recall": 0.9993991588223513,
+      "red_f1": 0.999199038846616,
+      "yellow_precision": 0.9216216216216216,
+      "yellow_recall": 0.9898403483309144,
+      "yellow_f1": 0.9545136459062281,
+      "green_precision": 0.9994861253854059,
+      "green_recall": 0.9924735297869626,
+      "green_f1": 0.9959674838379313,
+      "macro_precision": 0.9733689153353421,
+      "macro_recall": 0.9939043456467428,
+      "macro_f1": 0.9832267228635918,
+      "weighted_precision": 0.99632564752066,
+      "weighted_recall": 0.9961110510964676,
+      "weighted_f1": 0.9961677978695713
+    }
+  }
+}
