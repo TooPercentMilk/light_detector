@@ -86,11 +86,20 @@ def _torch_load(path: Path, device: torch.device) -> Any:
         return torch.load(str(path), map_location=device)
 
 
-def _load_best_detector(config_path: str, device_override: str | None):
-    from adas_perception.traffic_light.config import load_config
+def _load_best_detector(
+    config_path: str,
+    device_override: str | None,
+    input_size_override: tuple[int, int] | None = None,
+):
+    from adas_perception.traffic_light.config import (
+        apply_detector_input_size,
+        load_config,
+    )
     from yolox.exp import get_exp
 
     cfg = load_config(config_path)
+    if input_size_override is not None:
+        apply_detector_input_size(cfg, input_size_override)
     device_name = device_override or cfg.detector.device
     if str(device_name).startswith("cuda") and not torch.cuda.is_available():
         logger.warning("Config requested CUDA but CUDA is not available; using CPU")
@@ -99,6 +108,7 @@ def _load_best_detector(config_path: str, device_override: str | None):
 
     exp = get_exp(None, cfg.detector.exp_name)
     exp.num_classes = cfg.detector.num_classes
+    exp.input_size = tuple(cfg.detector.input_size)
     exp.test_size = tuple(cfg.detector.input_size)
     model = exp.get_model()
 
@@ -456,6 +466,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", default="configs/val_best.yaml", help="Config pointing to the best model")
     parser.add_argument("--dataset", default="data/coco_tl", help="COCO-format dataset root")
     parser.add_argument("--device", default=None, help="Override detector device, e.g. cpu or cuda")
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=960,
+        help="Square detector/preprocessor image size",
+    )
+    parser.add_argument(
+        "--input-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help="Detector/preprocessor input size; overrides --image-size",
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--nms-threshold", type=float, default=None, help="Override config detector NMS threshold")
@@ -503,7 +527,18 @@ def main(argv: list[str] | None = None) -> None:
             0.05 if args.threshold_step is None else args.threshold_step,
         )
 
-    cfg, model, device = _load_best_detector(args.config, args.device)
+    from adas_perception.traffic_light.config import detector_input_size_from_args
+
+    try:
+        requested_input_size = detector_input_size_from_args(args.image_size, args.input_size)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    cfg, model, device = _load_best_detector(
+        args.config,
+        args.device,
+        input_size_override=requested_input_size,
+    )
     nms_threshold = args.nms_threshold if args.nms_threshold is not None else cfg.detector.nms_threshold
     input_size = tuple(int(v) for v in cfg.detector.input_size)
 

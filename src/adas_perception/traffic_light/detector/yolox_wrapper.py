@@ -55,6 +55,7 @@ class YoloxWrapper(BaseDetector):
 
         exp = get_exp(None, self.config.exp_name)
         exp.num_classes = self.config.num_classes
+        exp.input_size = tuple(self.config.input_size)
         exp.test_size = tuple(self.config.input_size)
 
         self.model = exp.get_model()

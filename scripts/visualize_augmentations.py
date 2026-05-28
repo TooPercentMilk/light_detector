@@ -71,8 +71,11 @@ def main() -> None:
     parser.add_argument("--num-samples", type=int, default=8)
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Save images here instead of displaying")
-    parser.add_argument("--input-size", nargs=2, type=int, default=[1280, 1280],
-                        metavar=("H", "W"))
+    parser.add_argument("--image-size", type=int, default=960,
+                        help="Square detector/preprocessor image size")
+    parser.add_argument("--input-size", nargs=2, type=int, default=None,
+                        metavar=("H", "W"),
+                        help="Detector/preprocessor input size; overrides --image-size")
     parser.add_argument(
         "--top-half-only",
         "--top-40-only",
@@ -104,6 +107,12 @@ def main() -> None:
     parser.add_argument("--flip-prob", type=float, default=0.5)
 
     args = parser.parse_args()
+    if args.image_size <= 0:
+        parser.error("--image-size must be positive")
+    if args.input_size is None:
+        args.input_size = [args.image_size, args.image_size]
+    elif any(v <= 0 for v in args.input_size):
+        parser.error("--input-size values must be positive")
     if not 0.0 < args.top_crop_fraction <= 1.0:
         parser.error("--top-crop-fraction must be in the range (0, 1]")
 

@@ -82,16 +82,22 @@ def evaluate_detector(
     top_crop_only: bool = False,
     top_crop_fraction: float | None = None,
     top_third_only: bool = False,
+    input_size: tuple[int, int] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Load the detector from *config_path* and evaluate on the val split.
 
     Returns a dict keyed by ``"total"`` and each sequence name, where each
     value is ``{"mAP": …, "mAP_50": …, "mAP_75": …}``.
     """
-    from adas_perception.traffic_light.config import load_config
+    from adas_perception.traffic_light.config import (
+        apply_detector_input_size,
+        load_config,
+    )
     from adas_perception.traffic_light.detector.evaluator import evaluate
 
     cfg = load_config(config_path)
+    if input_size is not None:
+        apply_detector_input_size(cfg, input_size)
     dev = device or cfg.detector.device
     top_crop_only = (
         top_crop_only
@@ -110,6 +116,7 @@ def evaluate_detector(
 
     exp = get_exp(None, cfg.detector.exp_name)
     exp.num_classes = cfg.detector.num_classes
+    exp.input_size = tuple(cfg.detector.input_size)
     exp.test_size = tuple(cfg.detector.input_size)
     model = exp.get_model()
 
@@ -396,15 +403,21 @@ def evaluate_pipeline(
     top_crop_only: bool = False,
     top_crop_fraction: float | None = None,
     top_third_only: bool = False,
+    input_size: tuple[int, int] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Run the full pipeline on val images and evaluate end-to-end.
 
     Returns a dict keyed by ``"total"`` and each sequence name.
     """
-    from adas_perception.traffic_light.config import load_config
+    from adas_perception.traffic_light.config import (
+        apply_detector_input_size,
+        load_config,
+    )
     from adas_perception.traffic_light.node import TrafficLightNode
 
     cfg = load_config(config_path)
+    if input_size is not None:
+        apply_detector_input_size(cfg, input_size)
     if device:
         cfg.detector.device = device
         cfg.classifier.device = device
@@ -559,6 +572,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to COCO-format dataset directory",
     )
     parser.add_argument("--device", default=None, help="cuda or cpu (auto from config if omitted)")
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=960,
+        help="Square detector/preprocessor image size",
+    )
+    parser.add_argument(
+        "--input-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help="Detector/preprocessor input size; overrides --image-size",
+    )
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size for detector eval")
     parser.add_argument(
         "--iou-threshold",
@@ -605,9 +632,18 @@ def main(argv: list[str] | None = None) -> None:
     if args.top_crop_fraction is not None and not 0.0 < args.top_crop_fraction <= 1.0:
         parser.error("--top-crop-fraction must be in the range (0, 1]")
 
-    from adas_perception.traffic_light.config import load_config
+    from adas_perception.traffic_light.config import (
+        apply_detector_input_size,
+        detector_input_size_from_args,
+        load_config,
+    )
 
     cfg = load_config(args.config)
+    try:
+        input_size = detector_input_size_from_args(args.image_size, args.input_size)
+    except ValueError as exc:
+        parser.error(str(exc))
+    apply_detector_input_size(cfg, input_size)
 
     results: dict[str, dict] = {}
 
@@ -616,9 +652,11 @@ def main(argv: list[str] | None = None) -> None:
         "config": args.config,
         "detector_weights": cfg.detector.model_path,
         "classifier_weights": cfg.classifier.model_path,
+        "detector_input_size": list(input_size),
     }
     results["evaluation_mode"] = {
         "positive_images_only": args.positive_images_only,
+        "input_size": list(input_size),
         "top_crop_only": (
             args.top_crop_only
             or cfg.preprocess.top_crop_only
@@ -645,6 +683,7 @@ def main(argv: list[str] | None = None) -> None:
             args.positive_images_only,
             args.top_crop_only,
             args.top_crop_fraction,
+            input_size=input_size,
         )
         results["detector"] = det_metrics
         d = det_metrics["total"]
@@ -678,6 +717,7 @@ def main(argv: list[str] | None = None) -> None:
             args.positive_images_only,
             args.top_crop_only,
             args.top_crop_fraction,
+            input_size=input_size,
         )
         results["pipeline"] = pipe_metrics
 

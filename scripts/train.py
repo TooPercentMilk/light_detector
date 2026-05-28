@@ -49,6 +49,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 WEIGHTS_DIR = Path("weights")
+DEFAULT_DETECTOR_IMAGE_SIZE = 960
 
 
 def train_detector(args: argparse.Namespace) -> Path:
@@ -202,7 +203,20 @@ def main(argv: list[str] | None = None) -> None:
     det.add_argument("--det-batch-size", type=int, default=8)
     det.add_argument("--det-lr", type=float, default=1e-3)
     det.add_argument("--det-num-classes", type=int, default=1)
-    det.add_argument("--det-input-size", nargs=2, type=int, default=[1280, 1280], metavar=("H", "W"))
+    det.add_argument(
+        "--det-image-size",
+        type=int,
+        default=DEFAULT_DETECTOR_IMAGE_SIZE,
+        help="Square detector/preprocessor image size",
+    )
+    det.add_argument(
+        "--det-input-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help="Detector/preprocessor input size; overrides --det-image-size",
+    )
     det.add_argument("--det-pretrained", default="weights/yolox_m.pth", help="Backbone checkpoint for fine-tuning")
     det.add_argument("--det-resume", default=None, help="Resume training from checkpoint (overrides --det-pretrained)")
     det.add_argument("--det-exp-name", default="yolox-m", help="YOLOX experiment variant (must match --det-pretrained)")
@@ -272,6 +286,12 @@ def main(argv: list[str] | None = None) -> None:
     cls.add_argument("--cls-patience", type=int, default=5, help="Early stopping patience (0 = disabled)")
 
     args = parser.parse_args(argv)
+    if args.det_image_size <= 0:
+        parser.error("--det-image-size must be positive")
+    if args.det_input_size is None:
+        args.det_input_size = [args.det_image_size, args.det_image_size]
+    elif any(v <= 0 for v in args.det_input_size):
+        parser.error("--det-input-size values must be positive")
     if args.det_small_light_flip_range[0] < 0:
         parser.error("--det-small-light-flip-range MIN_PX must be non-negative")
     if args.det_small_light_flip_range[1] <= args.det_small_light_flip_range[0]:

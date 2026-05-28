@@ -104,5 +104,14 @@ python setup_external.py
 ```bash
 python -m adas_perception.traffic_light.node \
     --config configs/default.yaml \
-    --image-dir data/frames/
+    --image-dir data/frames/ \
+    --image-size 960
+```
+
+Detector training/evaluation use 960x960 by default. Override the square
+detector/preprocessor size when comparing runs:
+
+```bash
+python scripts/train.py --target detector --dataset data/coco_tl --det-image-size 1280
+python scripts/evaluate.py --config configs/val_best.yaml --dataset data/coco_tl --image-size 1280
 ```

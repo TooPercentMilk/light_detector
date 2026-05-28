@@ -170,11 +170,20 @@ def _path_uri(path: Path | None) -> str:
         return str(path)
 
 
-def _load_detector(config_path: str, device_override: str | None):
-    from adas_perception.traffic_light.config import load_config
+def _load_detector(
+    config_path: str,
+    device_override: str | None,
+    input_size_override: tuple[int, int] | None = None,
+):
+    from adas_perception.traffic_light.config import (
+        apply_detector_input_size,
+        load_config,
+    )
     from yolox.exp import get_exp
 
     cfg = load_config(config_path)
+    if input_size_override is not None:
+        apply_detector_input_size(cfg, input_size_override)
     device_name = device_override or cfg.detector.device
     if str(device_name).startswith("cuda") and not torch.cuda.is_available():
         logger.warning("Config requested CUDA but CUDA is not available; using CPU")
@@ -183,6 +192,7 @@ def _load_detector(config_path: str, device_override: str | None):
 
     exp = get_exp(None, cfg.detector.exp_name)
     exp.num_classes = cfg.detector.num_classes
+    exp.input_size = tuple(cfg.detector.input_size)
     exp.test_size = tuple(cfg.detector.input_size)
     model = exp.get_model()
 
@@ -909,6 +919,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", default="configs/val_best.yaml")
     parser.add_argument("--dataset", default="data/coco_tl")
     parser.add_argument("--device", default=None, help="Override detector device, e.g. cpu or cuda")
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=960,
+        help="Square detector/preprocessor image size",
+    )
+    parser.add_argument(
+        "--input-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help="Detector/preprocessor input size; overrides --image-size",
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--confidence-threshold", type=float, default=None)
@@ -941,7 +965,18 @@ def main(argv: list[str] | None = None) -> None:
     if any(args.size_bin_edges[i] >= args.size_bin_edges[i + 1] for i in range(len(args.size_bin_edges) - 1)):
         parser.error("--size-bin-edges must be strictly increasing")
 
-    cfg, model, device = _load_detector(args.config, args.device)
+    from adas_perception.traffic_light.config import detector_input_size_from_args
+
+    try:
+        requested_input_size = detector_input_size_from_args(args.image_size, args.input_size)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    cfg, model, device = _load_detector(
+        args.config,
+        args.device,
+        input_size_override=requested_input_size,
+    )
     input_size = tuple(int(v) for v in cfg.detector.input_size)
     confidence_threshold = (
         float(args.confidence_threshold)

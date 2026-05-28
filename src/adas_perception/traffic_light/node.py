@@ -18,7 +18,13 @@ from typing import List
 import cv2
 import numpy as np
 
-from .config import PipelineConfig, load_config
+from .config import (
+    DEFAULT_DETECTOR_IMAGE_SIZE,
+    PipelineConfig,
+    apply_detector_input_size,
+    detector_input_size_from_args,
+    load_config,
+)
 from .detector import build_detector
 from .fusion.map_gate import MapGate
 from .postprocess import postprocess
@@ -191,6 +197,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Show annotated frames in a window.",
     )
     parser.add_argument(
+        "--image-size",
+        type=int,
+        default=DEFAULT_DETECTOR_IMAGE_SIZE,
+        help="Square detector/preprocessor image size.",
+    )
+    parser.add_argument(
+        "--input-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help="Detector/preprocessor input size; overrides --image-size.",
+    )
+    parser.add_argument(
         "--top-half-only",
         "--top-40-only",
         "--top-third-only",
@@ -214,6 +234,11 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     config = load_config(args.config)
+    try:
+        input_size = detector_input_size_from_args(args.image_size, args.input_size)
+    except ValueError as exc:
+        parser.error(str(exc))
+    apply_detector_input_size(config, input_size)
     if args.top_crop_only:
         config.preprocess.top_crop_only = True
         config.preprocess.top_crop_fraction = args.top_crop_fraction

@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 def export_onnx(
     model: Any,
     output_path: str,
-    input_size: tuple[int, int] = (1280, 1280),
+    input_size: tuple[int, int] = (960, 960),
     opset_version: int = 11,
 ) -> None:
     """Export a PyTorch detector to ONNX format.

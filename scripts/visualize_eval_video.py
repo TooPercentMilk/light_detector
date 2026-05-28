@@ -30,7 +30,13 @@ import cv2
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from adas_perception.traffic_light.config import PipelineConfig, load_config
+from adas_perception.traffic_light.config import (
+    DEFAULT_DETECTOR_IMAGE_SIZE,
+    PipelineConfig,
+    apply_detector_input_size,
+    detector_input_size_from_args,
+    load_config,
+)
 from adas_perception.traffic_light.node import TrafficLightNode
 from adas_perception.traffic_light.viz.overlays import draw_traffic_lights
 
@@ -266,6 +272,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--clip", action="append", help="Clip name to render; repeat to stitch selected clips")
     parser.add_argument("--list-clips", action="store_true", help="List available clips and exit")
     parser.add_argument("--device", default=None, help="Override device for both detector and classifier")
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=DEFAULT_DETECTOR_IMAGE_SIZE,
+        help="Square detector/preprocessor image size",
+    )
+    parser.add_argument(
+        "--input-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help="Detector/preprocessor input size; overrides --image-size",
+    )
     parser.add_argument("--fps", type=float, default=None, help="Output video FPS; defaults to tracker frame_rate")
     parser.add_argument("--codec", default="mp4v", help="Four-character OpenCV video codec")
     parser.add_argument("--output-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"), default=None)
@@ -301,6 +321,11 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     config = load_config(config_path)
+    try:
+        input_size = detector_input_size_from_args(args.image_size, args.input_size)
+    except ValueError as exc:
+        parser.error(str(exc))
+    apply_detector_input_size(config, input_size)
     _resolve_config_paths(config)
     _configure_devices(config, args.device)
     _require_runtime_files(config)

@@ -23,7 +23,12 @@ import cv2
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.adas_perception.traffic_light.config import load_config
+from src.adas_perception.traffic_light.config import (
+    DEFAULT_DETECTOR_IMAGE_SIZE,
+    apply_detector_input_size,
+    detector_input_size_from_args,
+    load_config,
+)
 from src.adas_perception.traffic_light.node import TrafficLightNode
 from src.adas_perception.traffic_light.viz.overlays import draw_traffic_lights
 
@@ -59,10 +64,29 @@ def main() -> None:
         "--device", type=str, default=None,
         help="Override device (e.g. 'cpu' or 'cuda')",
     )
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=DEFAULT_DETECTOR_IMAGE_SIZE,
+        help="Square detector/preprocessor image size",
+    )
+    parser.add_argument(
+        "--input-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help="Detector/preprocessor input size; overrides --image-size",
+    )
     args = parser.parse_args()
 
     # Load config and optionally override device
     config = load_config(args.config)
+    try:
+        input_size = detector_input_size_from_args(args.image_size, args.input_size)
+    except ValueError as exc:
+        parser.error(str(exc))
+    apply_detector_input_size(config, input_size)
     if args.device:
         config.detector.device = args.device
         config.classifier.device = args.device

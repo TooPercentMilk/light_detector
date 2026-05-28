@@ -127,12 +127,18 @@ def evaluate_by_size(
     iou_threshold: float,
     bin_edges: list[float],
     positive_images_only: bool,
+    input_size: tuple[int, int] | None = None,
 ) -> dict:
     """Run the pipeline on the val split and aggregate metrics by box size."""
-    from adas_perception.traffic_light.config import load_config
+    from adas_perception.traffic_light.config import (
+        apply_detector_input_size,
+        load_config,
+    )
     from adas_perception.traffic_light.node import TrafficLightNode
 
     cfg = load_config(config_path)
+    if input_size is not None:
+        apply_detector_input_size(cfg, input_size)
     if device:
         cfg.detector.device = device
         cfg.classifier.device = device
@@ -292,6 +298,7 @@ def evaluate_by_size(
 
     results = {
         "config": str(config_path),
+        "input_size": list(input_size) if input_size is not None else list(cfg.detector.input_size),
         "iou_threshold": iou_threshold,
         "positive_images_only": positive_images_only,
         "bin_edges": [float(e) for e in bin_edges],
@@ -389,6 +396,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", default="configs/val_best.yaml")
     parser.add_argument("--dataset", default="data/coco_tl")
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=960,
+        help="Square detector/preprocessor image size",
+    )
+    parser.add_argument(
+        "--input-size",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("H", "W"),
+        help="Detector/preprocessor input size; overrides --image-size",
+    )
     parser.add_argument("--iou-threshold", type=float, default=0.5)
     parser.add_argument(
         "--bin-edges",
@@ -420,6 +441,13 @@ def main(argv: list[str] | None = None) -> None:
     if any(args.bin_edges[i] >= args.bin_edges[i + 1] for i in range(len(args.bin_edges) - 1)):
         parser.error("--bin-edges must be strictly increasing")
 
+    from adas_perception.traffic_light.config import detector_input_size_from_args
+
+    try:
+        input_size = detector_input_size_from_args(args.image_size, args.input_size)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     results = evaluate_by_size(
         config_path=args.config,
         dataset_path=args.dataset,
@@ -427,10 +455,11 @@ def main(argv: list[str] | None = None) -> None:
         iou_threshold=args.iou_threshold,
         bin_edges=list(args.bin_edges),
         positive_images_only=args.positive_images_only,
+        input_size=input_size,
     )
 
     _print_table("TOTAL (all sequences)", results["total"])
-    for key in sorted(k for k in results.keys() if k not in {"total", "config", "iou_threshold", "positive_images_only", "bin_edges"}):
+    for key in sorted(k for k in results.keys() if k not in {"total", "config", "input_size", "iou_threshold", "positive_images_only", "bin_edges"}):
         _print_table(key, results[key])
 
     ts = datetime.now().strftime("%Y-%m-%d_%H%M")

@@ -422,7 +422,7 @@ class YoloxTrainer:
         Additional keys accepted via *model_config* (passed at ``__init__``):
 
         * ``num_classes`` (int, default 1)
-        * ``input_size`` (list[int], default [1280, 1280])
+        * ``input_size`` (list[int], default [960, 960])
         * ``device`` (str, default "cuda" or "cpu")
         * ``pretrained_ckpt`` (str) — path to backbone weights for fine-tuning
         * ``exp_name`` (str, default "yolox-s") — YOLOX experiment variant
@@ -440,7 +440,7 @@ class YoloxTrainer:
                 f"Training annotation file not found: {ann_file}"
             )
         num_classes = self.model_config.get("num_classes", 1)
-        input_size = tuple(self.model_config.get("input_size", (1280, 1280)))
+        input_size = tuple(self.model_config.get("input_size", (960, 960)))
         top_crop_only = bool(
             self.model_config.get("top_crop_only")
             or self.model_config.get("top_third_only", False)
@@ -463,8 +463,8 @@ class YoloxTrainer:
         # are read by the head/label assigner and by export utilities.
         exp.input_size = tuple(input_size)
         exp.test_size = tuple(input_size)
-        # Disable YOLOX's built-in multi-scale jitter — at 1280 it would push
-        # VRAM over the edge and our augmentations are handled in-dataset.
+        # Disable YOLOX's built-in multi-scale jitter. Our image size is a
+        # runtime decision, and our augmentations are handled in-dataset.
         exp.random_size = None
         model = exp.get_model()
 
