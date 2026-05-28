@@ -2,7 +2,7 @@ detector:
   type: "yolox"
   model_path: "runs/train/detector/best.pth"
   device: "cuda"
-  input_size: [960, 960]
+  input_size: [1280, 1280]
   confidence_threshold: 0.1
   nms_threshold: 0.45
   num_classes: 1
@@ -27,7 +27,9 @@ temporal_smoother:
   min_consensus: 3
 
 preprocess:
-  input_size: [960, 960]
+  input_size: [1280, 1280]
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
   swap_rb: true
+  top_crop_only: false
+  top_crop_fraction: 0.5

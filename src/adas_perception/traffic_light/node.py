@@ -22,7 +22,7 @@ from .config import PipelineConfig, load_config
 from .detector import build_detector
 from .fusion.map_gate import MapGate
 from .postprocess import postprocess
-from .preprocess import Preprocessor
+from .preprocess import Preprocessor, top_fraction_height
 from .schemas import LightState, TrafficLight
 from .state.classifier import StateClassifier
 from .state.roi_refiner import RoiRefiner
@@ -82,11 +82,29 @@ class TrafficLightNode:
         )
 
         # 3b. Rescale boxes from letterbox space → original image coords
+        top_crop_enabled = (
+            self.config.preprocess.top_crop_only
+            or self.config.preprocess.top_third_only
+        )
+        max_y = (
+            top_fraction_height(
+                image.shape[0],
+                self.config.preprocess.top_crop_fraction,
+            )
+            if top_crop_enabled
+            else image.shape[0]
+        )
+        clipped_detections = []
         for det in detections:
             det.bbox = det.bbox / scale
+            det.bbox[0::2] = np.clip(det.bbox[0::2], 0, image.shape[1])
+            det.bbox[1::2] = np.clip(det.bbox[1::2], 0, max_y)
+            if det.bbox[2] > det.bbox[0] and det.bbox[3] > det.bbox[1]:
+                clipped_detections.append(det)
+        detections = clipped_detections
 
         # 4. Track
-        tracked = self.tracker.update(detections, frame_id)
+        tracked = self.tracker.update(detections, frame_id, image.shape[:2])
 
         # 5. Classify state per tracked object
         results: List[TrafficLight] = []
@@ -172,7 +190,23 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Show annotated frames in a window.",
     )
+    parser.add_argument(
+        "--top-half-only",
+        "--top-40-only",
+        "--top-third-only",
+        dest="top_crop_only",
+        action="store_true",
+        help="Run detector inference on only the top half of each frame.",
+    )
+    parser.add_argument(
+        "--top-crop-fraction",
+        type=float,
+        default=0.5,
+        help="Image-height fraction kept when --top-half-only is enabled.",
+    )
     args = parser.parse_args(argv)
+    if not 0.0 < args.top_crop_fraction <= 1.0:
+        parser.error("--top-crop-fraction must be in the range (0, 1]")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -180,6 +214,9 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     config = load_config(args.config)
+    if args.top_crop_only:
+        config.preprocess.top_crop_only = True
+        config.preprocess.top_crop_fraction = args.top_crop_fraction
     node = TrafficLightNode(config)
     node.run(args.image_dir, visualize=args.visualize)
 

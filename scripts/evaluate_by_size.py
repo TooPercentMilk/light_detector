@@ -70,7 +70,7 @@ _TAG_TO_CLASS: dict[str, int] = {
 }
 
 # Default sqrt(area) bin edges in original-image pixels. Designed to spotlight
-# the "small object" regime where YOLOX with 640×640 input typically struggles.
+# the "small object" regime where lower-resolution detector inputs struggle.
 DEFAULT_BIN_EDGES: list[float] = [0, 8, 12, 16, 24, 32, 48, 96, 1e9]
 
 

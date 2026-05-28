@@ -17,6 +17,10 @@ Usage::
     # Evaluate only validation images that contain at least one traffic light
     python scripts/evaluate.py --config configs/val_best.yaml --dataset data/coco_tl \
         --positive-images-only
+
+    # Evaluate with top-half detector inputs while keeping full-frame GT
+    python scripts/evaluate.py --config configs/val_best.yaml --dataset data/coco_tl \
+        --top-half-only
 """
 
 from __future__ import annotations
@@ -73,8 +77,11 @@ def evaluate_detector(
     config_path: str,
     dataset_path: str,
     device: str | None = None,
-    batch_size: int = 8,
+    batch_size: int = 4,
     positive_images_only: bool = False,
+    top_crop_only: bool = False,
+    top_crop_fraction: float | None = None,
+    top_third_only: bool = False,
 ) -> dict[str, dict[str, float]]:
     """Load the detector from *config_path* and evaluate on the val split.
 
@@ -86,6 +93,17 @@ def evaluate_detector(
 
     cfg = load_config(config_path)
     dev = device or cfg.detector.device
+    top_crop_only = (
+        top_crop_only
+        or top_third_only
+        or cfg.preprocess.top_crop_only
+        or cfg.preprocess.top_third_only
+    )
+    top_crop_fraction = (
+        cfg.preprocess.top_crop_fraction
+        if top_crop_fraction is None
+        else top_crop_fraction
+    )
 
     # Build the raw YOLOX model (same path the wrapper uses)
     from yolox.exp import get_exp
@@ -133,6 +151,8 @@ def evaluate_detector(
         batch_size=batch_size,
         device=dev,
         positive_images_only=positive_images_only,
+        top_crop_only=top_crop_only,
+        top_crop_fraction=top_crop_fraction,
     )
     results: dict[str, dict[str, float]] = {"total": total_metrics}
 
@@ -156,6 +176,8 @@ def evaluate_detector(
                 device=dev,
                 image_ids=img_ids,
                 positive_images_only=positive_images_only,
+                top_crop_only=top_crop_only,
+                top_crop_fraction=top_crop_fraction,
             )
             results[seq_name] = seq_metrics
 
@@ -371,6 +393,9 @@ def evaluate_pipeline(
     device: str | None = None,
     iou_threshold: float = 0.5,
     positive_images_only: bool = False,
+    top_crop_only: bool = False,
+    top_crop_fraction: float | None = None,
+    top_third_only: bool = False,
 ) -> dict[str, dict[str, float]]:
     """Run the full pipeline on val images and evaluate end-to-end.
 
@@ -383,6 +408,10 @@ def evaluate_pipeline(
     if device:
         cfg.detector.device = device
         cfg.classifier.device = device
+    if top_crop_fraction is not None:
+        cfg.preprocess.top_crop_fraction = top_crop_fraction
+    if top_crop_only or top_third_only:
+        cfg.preprocess.top_crop_only = True
 
     node = TrafficLightNode(cfg)
 
@@ -530,7 +559,7 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to COCO-format dataset directory",
     )
     parser.add_argument("--device", default=None, help="cuda or cpu (auto from config if omitted)")
-    parser.add_argument("--batch-size", type=int, default=8, help="Batch size for detector eval")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size for detector eval")
     parser.add_argument(
         "--iou-threshold",
         type=float,
@@ -557,8 +586,24 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Restrict detector and pipeline validation to images with at least one traffic-light annotation",
     )
+    parser.add_argument(
+        "--top-half-only",
+        "--top-40-only",
+        "--top-third-only",
+        dest="top_crop_only",
+        action="store_true",
+        help="Feed detector inference the top-half crop while keeping full-frame ground truth for scoring",
+    )
+    parser.add_argument(
+        "--top-crop-fraction",
+        type=float,
+        default=None,
+        help="Image-height fraction kept when --top-half-only is enabled (uses config value when omitted)",
+    )
 
     args = parser.parse_args(argv)
+    if args.top_crop_fraction is not None and not 0.0 < args.top_crop_fraction <= 1.0:
+        parser.error("--top-crop-fraction must be in the range (0, 1]")
 
     from adas_perception.traffic_light.config import load_config
 
@@ -574,6 +619,17 @@ def main(argv: list[str] | None = None) -> None:
     }
     results["evaluation_mode"] = {
         "positive_images_only": args.positive_images_only,
+        "top_crop_only": (
+            args.top_crop_only
+            or cfg.preprocess.top_crop_only
+            or cfg.preprocess.top_third_only
+        ),
+        "top_crop_fraction": (
+            cfg.preprocess.top_crop_fraction
+            if args.top_crop_fraction is None
+            else args.top_crop_fraction
+        ),
+        "full_frame_ground_truth": True,
     }
 
     # --- 1. Detector mAP ---
@@ -587,6 +643,8 @@ def main(argv: list[str] | None = None) -> None:
             args.device,
             args.batch_size,
             args.positive_images_only,
+            args.top_crop_only,
+            args.top_crop_fraction,
         )
         results["detector"] = det_metrics
         d = det_metrics["total"]
@@ -618,6 +676,8 @@ def main(argv: list[str] | None = None) -> None:
             args.device,
             args.iou_threshold,
             args.positive_images_only,
+            args.top_crop_only,
+            args.top_crop_fraction,
         )
         results["pipeline"] = pipe_metrics
 

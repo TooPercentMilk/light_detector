@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import random
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
@@ -19,8 +20,88 @@ from adas_perception.traffic_light.detector.augmentations import (
     random_crop_translate,
     random_scale_jitter,
 )
+from adas_perception.traffic_light.preprocess import (
+    DEFAULT_TOP_CROP_FRACTION,
+    crop_top_fraction,
+    letterbox_image,
+    top_fraction_height,
+)
+from adas_perception.traffic_light.training_plots import write_loss_curve
 
 logger = logging.getLogger(__name__)
+
+
+def _torch_load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu"):
+    """Load trusted local training checkpoints across PyTorch versions."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _torch_load_weights(path: str | Path, map_location: str | torch.device = "cpu"):
+    """Load a weights file while remaining compatible with older PyTorch."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _to_cpu(value):
+    if torch.is_tensor(value):
+        return value.detach().cpu().clone()
+    if isinstance(value, dict):
+        return {key: _to_cpu(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_to_cpu(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_to_cpu(item) for item in value)
+    return value
+
+
+def _state_dict_to_cpu(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    return _to_cpu(state_dict)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class _ModelEMA:
+    """Minimal model EMA tracker that stores a state_dict-shaped shadow copy."""
+
+    def __init__(self, model: torch.nn.Module, decay: float = 0.9998) -> None:
+        self.decay = float(decay)
+        self.state = {
+            key: value.detach().clone()
+            for key, value in model.state_dict().items()
+        }
+
+    @torch.no_grad()
+    def update(self, model: torch.nn.Module) -> None:
+        model_state = model.state_dict()
+        for key, value in model_state.items():
+            shadow = self.state[key]
+            current = value.detach()
+            if torch.is_floating_point(shadow):
+                shadow.mul_(self.decay).add_(current, alpha=1.0 - self.decay)
+            else:
+                shadow.copy_(current)
+
+    def state_dict(self) -> dict[str, torch.Tensor]:
+        return self.state
+
+    def load_state_dict(self, state_dict: dict[str, torch.Tensor]) -> None:
+        restored = {}
+        for key, value in state_dict.items():
+            current = self.state.get(key)
+            if current is not None and torch.is_tensor(value):
+                restored[key] = value.detach().to(device=current.device, dtype=current.dtype).clone()
+            elif torch.is_tensor(value):
+                restored[key] = value.detach().clone()
+            else:
+                restored[key] = value
+        self.state = restored
 
 
 # ------------------------------------------------------------------
@@ -52,12 +133,17 @@ class _COCODetectionDataset(Dataset):
         flip_prob: float = 0.5,
         small_light_flip: bool = False,
         small_light_flip_range: Tuple[float, float] = (8.0, 24.0),
+        top_crop_only: bool = False,
+        top_crop_fraction: float = DEFAULT_TOP_CROP_FRACTION,
+        top_third_only: bool = False,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_dir = self.data_dir / split
         self.input_size = input_size  # (H, W) — YOLOX convention
         self.max_labels = max_labels
         self.augment = augment
+        self.top_crop_only = top_crop_only or top_third_only
+        self.top_crop_fraction = float(top_crop_fraction)
 
         # Augmentation parameters
         self.mosaic_prob = mosaic_prob
@@ -94,11 +180,23 @@ class _COCODetectionDataset(Dataset):
         # Group only valid annotations by image_id.
         self.anns_by_img: dict[int, List[dict]] = {}
         for ann in coco["annotations"]:
-            x, y, w, h = ann["bbox"]
+            img_info = self.images.get(ann["image_id"])
+            if img_info is None:
+                continue
+            clipped_bbox = self._clip_bbox_to_training_region(
+                ann["bbox"],
+                img_width=int(img_info["width"]),
+                img_height=int(img_info["height"]),
+            )
+            if clipped_bbox is None:
+                continue
+            x, y, w, h = clipped_bbox
             if w <= 0 or h <= 0:
                 continue
             if ann["category_id"] not in self.cat_to_idx:
                 continue
+            ann = ann.copy()
+            ann["bbox"] = [x, y, w, h]
             self.anns_by_img.setdefault(ann["image_id"], []).append(ann)
 
         self.img_ids = list(self.images.keys())
@@ -138,6 +236,31 @@ class _COCODetectionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
+    def _clip_bbox_to_training_region(
+        self,
+        bbox: list[float],
+        img_width: int,
+        img_height: int,
+    ) -> list[float] | None:
+        x, y, w, h = bbox
+        if w <= 0 or h <= 0:
+            return None
+
+        crop_h = (
+            top_fraction_height(img_height, self.top_crop_fraction)
+            if self.top_crop_only
+            else img_height
+        )
+        x1 = min(max(float(x), 0.0), float(img_width))
+        y1 = min(max(float(y), 0.0), float(crop_h))
+        x2 = min(max(float(x + w), 0.0), float(img_width))
+        y2 = min(max(float(y + h), 0.0), float(crop_h))
+        clipped_w = x2 - x1
+        clipped_h = y2 - y1
+        if clipped_w <= 0 or clipped_h <= 0:
+            return None
+        return [x1, y1, clipped_w, clipped_h]
+
     def _has_light_in_size_range(
         self,
         img_id: int,
@@ -166,6 +289,8 @@ class _COCODetectionDataset(Dataset):
         image = cv2.imread(str(img_path))
         if image is None:
             raise RuntimeError(f"Could not read image: {img_path}")
+        if self.top_crop_only:
+            image = crop_top_fraction(image, self.top_crop_fraction)
 
         anns = self.anns_by_img.get(img_id, [])
         bboxes = []
@@ -228,13 +353,7 @@ class _COCODetectionDataset(Dataset):
             )
 
         # --- resize to input_size (letterbox) ---
-        ih, iw = image.shape[:2]
-        r = min(tw / iw, th / ih)
-        new_w, new_h = int(iw * r), int(ih * r)
-        resized = cv2.resize(image, (new_w, new_h))
-
-        canvas = np.full((th, tw, 3), 114, dtype=np.uint8)
-        canvas[:new_h, :new_w] = resized
+        canvas, r = letterbox_image(image, (th, tw))
         bboxes *= r
 
         # --- build labels: [class_id, cx, cy, w, h] ---
@@ -281,7 +400,7 @@ class YoloxTrainer:
         self,
         dataset_path: str,
         epochs: int = 50,
-        batch_size: int = 16,
+        batch_size: int = 8,
         lr: float = 1e-3,
         patience: int = 0,
         no_mosaic_epochs: int = 15,
@@ -303,7 +422,7 @@ class YoloxTrainer:
         Additional keys accepted via *model_config* (passed at ``__init__``):
 
         * ``num_classes`` (int, default 1)
-        * ``input_size`` (list[int], default [640, 640])
+        * ``input_size`` (list[int], default [1280, 1280])
         * ``device`` (str, default "cuda" or "cpu")
         * ``pretrained_ckpt`` (str) — path to backbone weights for fine-tuning
         * ``exp_name`` (str, default "yolox-s") — YOLOX experiment variant
@@ -321,11 +440,19 @@ class YoloxTrainer:
                 f"Training annotation file not found: {ann_file}"
             )
         num_classes = self.model_config.get("num_classes", 1)
-        input_size = tuple(self.model_config.get("input_size", (640, 640)))
+        input_size = tuple(self.model_config.get("input_size", (1280, 1280)))
+        top_crop_only = bool(
+            self.model_config.get("top_crop_only")
+            or self.model_config.get("top_third_only", False)
+        )
+        top_crop_fraction = float(
+            self.model_config.get("top_crop_fraction", DEFAULT_TOP_CROP_FRACTION)
+        )
         device = self.model_config.get(
             "device", "cuda" if torch.cuda.is_available() else "cpu"
         )
         pretrained_ckpt = self.model_config.get("pretrained_ckpt")
+        resume_ckpt = self.model_config.get("resume_ckpt")
         exp_name = self.model_config.get("exp_name", "yolox-m")
 
         # ---- model ----
@@ -336,16 +463,40 @@ class YoloxTrainer:
         # are read by the head/label assigner and by export utilities.
         exp.input_size = tuple(input_size)
         exp.test_size = tuple(input_size)
-        # Disable YOLOX's built-in multi-scale jitter — at 960 it would push
+        # Disable YOLOX's built-in multi-scale jitter — at 1280 it would push
         # VRAM over the edge and our augmentations are handled in-dataset.
         exp.random_size = None
         model = exp.get_model()
 
-        if pretrained_ckpt and Path(pretrained_ckpt).is_file():
-            ckpt = torch.load(
-                pretrained_ckpt, map_location="cpu", weights_only=True
-            )
-            src_state = ckpt.get("model", ckpt)
+        resume_data = None
+        if resume_ckpt and Path(resume_ckpt).is_file():
+            resume_data = _torch_load_checkpoint(resume_ckpt, map_location="cpu")
+            src_state = resume_data.get("model", resume_data) if isinstance(resume_data, dict) else resume_data
+            try:
+                model.load_state_dict(src_state)
+                logger.info("Loaded detector model state from resume checkpoint: %s", resume_ckpt)
+            except RuntimeError as exc:
+                logger.warning(
+                    "Strict resume model load failed (%s); loading compatible keys only",
+                    exc,
+                )
+                model_state = model.state_dict()
+                compatible = {
+                    k: v for k, v in src_state.items()
+                    if k in model_state and v.shape == model_state[k].shape
+                }
+                model.load_state_dict(compatible, strict=False)
+                logger.info(
+                    "Loaded compatible resume weights from %s (%d/%d keys)",
+                    resume_ckpt,
+                    len(compatible),
+                    len(src_state),
+                )
+        elif resume_ckpt:
+            logger.warning("Resume checkpoint not found: %s", resume_ckpt)
+        elif pretrained_ckpt and Path(pretrained_ckpt).is_file():
+            ckpt = _torch_load_weights(pretrained_ckpt, map_location="cpu")
+            src_state = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
             # Filter out keys whose shapes don't match (e.g. cls head from 80-class COCO)
             model_state = model.state_dict()
             compatible = {
@@ -387,6 +538,8 @@ class YoloxTrainer:
             small_light_flip_range=tuple(
                 self.model_config.get("small_light_flip_range", (8.0, 24.0))
             ),
+            top_crop_only=top_crop_only,
+            top_crop_fraction=top_crop_fraction,
         )
         num_workers = self.model_config.get("data_num_workers", 4)
         loader = torch.utils.data.DataLoader(
@@ -407,6 +560,32 @@ class YoloxTrainer:
                 f"Training loader is empty ({len(dataset)} images, "
                 f"batch_size={batch_size}). Verify dataset_path: {dataset_path}"
             )
+
+        val_loss_loader = None
+        val_ann_file = dataset_path / "annotations" / "instances_val.json"
+        if val_ann_file.is_file():
+            val_loss_dataset = _COCODetectionDataset(
+                data_dir=str(dataset_path),
+                json_file="instances_val.json",
+                split="val",
+                input_size=input_size,
+                max_labels=50,
+                augment=False,
+                positive_images_only=positive_images_only,
+                top_crop_only=top_crop_only,
+                top_crop_fraction=top_crop_fraction,
+            )
+            val_loss_loader = torch.utils.data.DataLoader(
+                val_loss_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                pin_memory=(device != "cpu"),
+                drop_last=False,
+                persistent_workers=(num_workers > 0),
+                prefetch_factor=(4 if num_workers > 0 else None),
+            )
+            logger.info("Validation loss samples: %d", len(val_loss_dataset))
 
         # ---- optimizer (3 param groups, matching YOLOX convention) ----
         pg_bn, pg_weight, pg_bias = [], [], []
@@ -434,6 +613,10 @@ class YoloxTrainer:
 
         use_amp = device != "cpu"
         scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+        ema = _ModelEMA(
+            model,
+            decay=float(self.model_config.get("ema_decay", 0.9998)),
+        )
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -449,21 +632,124 @@ class YoloxTrainer:
         best_val_map50 = -1.0
         best_loss = float("inf")
         epochs_no_improve = 0
+        start_epoch = 0
+        last_completed_epoch = 0
+        loss_history: list[dict[str, float | int | None]] = []
+
+        if isinstance(resume_data, dict):
+            start_epoch = int(resume_data.get("epoch", 0) or 0)
+            last_completed_epoch = start_epoch
+            best_val_map50 = float(resume_data.get("best_val_map50", best_val_map50))
+            best_loss = float(resume_data.get("best_loss", best_loss))
+            epochs_no_improve = int(resume_data.get("epochs_no_improve", epochs_no_improve) or 0)
+            saved_history = resume_data.get("loss_history", [])
+            if isinstance(saved_history, list):
+                loss_history = [
+                    row for row in saved_history
+                    if isinstance(row, dict)
+                    and int(row.get("epoch", 0) or 0) <= start_epoch
+                ]
+
+            if "optimizer" in resume_data:
+                optimizer.load_state_dict(resume_data["optimizer"])
+                logger.info("Restored optimizer state from %s", resume_ckpt)
+            else:
+                logger.warning("Resume checkpoint has no optimizer state: %s", resume_ckpt)
+
+            if "scheduler" in resume_data:
+                scheduler.load_state_dict(resume_data["scheduler"])
+                logger.info("Restored scheduler state from %s", resume_ckpt)
+                saved_epochs = resume_data.get("training", {}).get("epochs")
+                if saved_epochs is not None and int(saved_epochs) != int(epochs):
+                    scheduler.T_max = int(epochs)
+                    logger.info(
+                        "Adjusted scheduler T_max from saved %s to requested %s epochs",
+                        saved_epochs,
+                        epochs,
+                    )
+            else:
+                logger.warning("Resume checkpoint has no scheduler state: %s", resume_ckpt)
+
+            if "scaler" in resume_data:
+                scaler.load_state_dict(resume_data["scaler"])
+                logger.info("Restored AMP scaler state from %s", resume_ckpt)
+
+            ema_state = resume_data.get("ema_model") or resume_data.get("ema")
+            if ema_state is not None:
+                ema.load_state_dict(ema_state)
+                logger.info("Restored EMA weights from %s", resume_ckpt)
+            else:
+                logger.warning("Resume checkpoint has no EMA weights: %s", resume_ckpt)
 
         no_mosaic_start = epochs - no_mosaic_epochs if no_mosaic_epochs > 0 else epochs
+        if augment and start_epoch >= no_mosaic_start and no_mosaic_epochs > 0:
+            dataset.mosaic_prob = 0.0
 
         logger.info(
             "Training: %d epochs, batch=%d, lr=%.1e, device=%s, "
-            "%d images, %d iters/epoch, patience=%s, augment=%s, positive_images_only=%s, no_mosaic_after_epoch=%d",
+            "%d images, %d iters/epoch, start_epoch=%d, patience=%s, augment=%s, positive_images_only=%s, top_crop_only=%s, top_crop_fraction=%.2f, no_mosaic_after_epoch=%d",
             epochs, batch_size, lr, device, len(dataset), len(loader),
+            start_epoch,
             patience if patience > 0 else "off",
             augment,
             positive_images_only,
+            top_crop_only,
+            top_crop_fraction,
             no_mosaic_start,
         )
+        if start_epoch >= epochs:
+            logger.warning(
+                "Resume checkpoint epoch %d is already at or beyond requested epochs=%d",
+                start_epoch,
+                epochs,
+            )
+
+        def save_checkpoint(
+            path: Path,
+            epoch_number: int,
+            metric_name: str,
+            metric_value: float,
+            training_stopped_at: str | None = None,
+        ) -> None:
+            checkpoint = {
+                "format_version": 2,
+                "checkpoint_type": "detector",
+                "epoch": int(epoch_number),
+                "model": _state_dict_to_cpu(model.state_dict()),
+                "optimizer": _to_cpu(optimizer.state_dict()),
+                "scheduler": _to_cpu(scheduler.state_dict()),
+                "scaler": _to_cpu(scaler.state_dict()),
+                "ema_model": _state_dict_to_cpu(ema.state_dict()),
+                "ema_decay": ema.decay,
+                "best_val_map50": float(best_val_map50),
+                "best_loss": float(best_loss),
+                "epochs_no_improve": int(epochs_no_improve),
+                "metric_name": metric_name,
+                "metric_value": float(metric_value),
+                "loss_history": loss_history,
+                "training": {
+                    "epochs": int(epochs),
+                    "batch_size": int(batch_size),
+                    "lr": float(lr),
+                    "patience": int(patience),
+                    "no_mosaic_epochs": int(no_mosaic_epochs),
+                    "augment": bool(augment),
+                    "positive_images_only": bool(positive_images_only),
+                    "top_crop_only": bool(top_crop_only),
+                    "top_crop_fraction": float(top_crop_fraction),
+                    "val_every": int(val_every),
+                    "input_size": list(input_size),
+                    "num_classes": int(num_classes),
+                    "exp_name": str(exp_name),
+                },
+            }
+            if training_stopped_at is not None:
+                checkpoint["training_stopped_at"] = training_stopped_at
+            path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(checkpoint, path)
 
         # ---- training loop ----
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             # Mosaic cooldown: disable for the final no_mosaic_epochs epochs.
             if augment and epoch == no_mosaic_start and no_mosaic_epochs > 0:
                 dataset.mosaic_prob = 0.0
@@ -490,6 +776,7 @@ class YoloxTrainer:
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
+                ema.update(model)
 
                 epoch_loss += loss.item()
 
@@ -505,7 +792,18 @@ class YoloxTrainer:
             logger.info("Epoch %d/%d — avg_loss=%.4f", epoch + 1, epochs, avg)
 
             # ---- validation & early stopping ----
+            stop_training = False
+            latest_metric_name = "train_loss"
+            latest_metric_value = avg
+            val_loss = None
             if val_every > 0 and (epoch + 1) % val_every == 0:
+                if val_loss_loader is not None:
+                    val_loss = self._validation_loss(
+                        model=model,
+                        loader=val_loss_loader,
+                        device=str(device),
+                        use_amp=use_amp,
+                    )
                 val_metrics = self._eval_val(
                     model=model,
                     dataset_path=dataset_path,
@@ -520,18 +818,21 @@ class YoloxTrainer:
                 log_parts = [
                     f"Epoch {epoch + 1}/{epochs}",
                     f"train_loss={avg:.4f}",
+                    f"val_loss={val_loss:.4f}" if val_loss is not None else "val_loss=n/a",
                     f"val_mAP_50={val_map50:.4f}",
                     f"val_mAP={val_metrics.get('mAP', 0.0):.4f}",
                 ]
                 if e2e is not None:
                     log_parts.append(f"e2e_acc={e2e * 100:.1f}%")
                 logger.info(" | ".join(log_parts))
+                latest_metric_name = "val_mAP_50"
+                latest_metric_value = val_map50
 
                 if val_map50 > best_val_map50:
                     best_val_map50 = val_map50
                     epochs_no_improve = 0
                     best_path = self.output_dir / "best.pth"
-                    torch.save({"model": model.state_dict(), "epoch": epoch + 1}, best_path)
+                    save_checkpoint(best_path, epoch + 1, "val_mAP_50", val_map50)
                     logger.info("New best val_mAP_50=%.4f — saved %s", val_map50, best_path)
                 else:
                     epochs_no_improve += 1
@@ -540,14 +841,14 @@ class YoloxTrainer:
                             "Early stopping: val mAP_50 did not improve for %d epochs",
                             patience,
                         )
-                        break
-            else:
+                        stop_training = True
+            elif val_every == 0:
                 # val_every == 0: use training loss for best.pth and patience.
                 if avg < best_loss:
                     best_loss = avg
                     epochs_no_improve = 0
                     best_path = self.output_dir / "best.pth"
-                    torch.save({"model": model.state_dict(), "epoch": epoch + 1}, best_path)
+                    save_checkpoint(best_path, epoch + 1, "train_loss", avg)
                     logger.info("New best train_loss=%.4f — saved %s", avg, best_path)
                 else:
                     epochs_no_improve += 1
@@ -556,25 +857,95 @@ class YoloxTrainer:
                             "Early stopping: train loss did not improve for %d epochs",
                             patience,
                         )
-                        break
+                        stop_training = True
+
+            last_completed_epoch = epoch + 1
+            loss_history.append(
+                {
+                    "epoch": int(last_completed_epoch),
+                    "train_loss": float(avg),
+                    "val_loss": float(val_loss) if val_loss is not None else None,
+                }
+            )
+            write_loss_curve(
+                loss_history,
+                self.output_dir / "loss_curve.png",
+                "Detector Training and Validation Loss",
+            )
+
+            latest_path = self.output_dir / "latest.pth"
+            save_checkpoint(
+                latest_path,
+                last_completed_epoch,
+                latest_metric_name,
+                latest_metric_value,
+            )
+            logger.info("Saved latest checkpoint -> %s", latest_path)
 
             # periodic checkpoint
             save_interval = max(1, epochs // 5)
             if (epoch + 1) % save_interval == 0 or epoch + 1 == epochs:
                 ckpt_path = self.output_dir / f"epoch_{epoch + 1}.pth"
-                torch.save(
-                    {"model": model.state_dict(), "epoch": epoch + 1},
+                save_checkpoint(
                     ckpt_path,
+                    epoch + 1,
+                    latest_metric_name,
+                    latest_metric_value,
                 )
                 logger.info("Saved %s", ckpt_path)
 
+            if stop_training:
+                break
+
         final_path = self.output_dir / "yolox_tl.pth"
-        torch.save({"model": model.state_dict(), "epoch": epochs}, final_path)
+        final_metric = avg if "avg" in locals() else float("nan")
+        save_checkpoint(
+            final_path,
+            last_completed_epoch,
+            "train_loss",
+            final_metric,
+            training_stopped_at=_utc_now_iso(),
+        )
         logger.info("Training complete — %s", final_path)
 
     # ------------------------------------------------------------------
     # Validation helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validation_loss(
+        model: torch.nn.Module,
+        loader: torch.utils.data.DataLoader,
+        device: str,
+        use_amp: bool,
+    ) -> float:
+        was_training = model.training
+        bn_modes: list[tuple[torch.nn.Module, bool]] = []
+        model.train()
+        for module in model.modules():
+            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+                bn_modes.append((module, module.training))
+                module.eval()
+
+        loss_total = 0.0
+        total = 0
+        try:
+            with torch.no_grad():
+                for imgs, targets in loader:
+                    imgs = imgs.to(device, dtype=torch.float32, non_blocking=True)
+                    targets = targets.to(device, non_blocking=True)
+                    with torch.amp.autocast("cuda", enabled=use_amp):
+                        outputs = model(imgs, targets)
+                        loss = outputs["total_loss"]
+                    batch_size = imgs.size(0)
+                    loss_total += loss.item() * batch_size
+                    total += batch_size
+        finally:
+            for module, training in bn_modes:
+                module.train(training)
+            model.train(was_training)
+
+        return loss_total / total if total > 0 else float("nan")
 
     @staticmethod
     def _load_classifier(classifier_config: dict, device: str):
@@ -608,6 +979,14 @@ class YoloxTrainer:
         """Run detector COCO mAP on the val split, plus optional e2e accuracy."""
         from adas_perception.traffic_light.detector.evaluator import evaluate as det_evaluate
 
+        top_crop_only = bool(
+            self.model_config.get("top_crop_only")
+            or self.model_config.get("top_third_only", False)
+        )
+        top_crop_fraction = float(
+            self.model_config.get("top_crop_fraction", DEFAULT_TOP_CROP_FRACTION)
+        )
+
         det_metrics = det_evaluate(
             model=model,
             dataset_path=str(dataset_path),
@@ -617,6 +996,8 @@ class YoloxTrainer:
             batch_size=batch_size,
             device=device,
             positive_images_only=positive_images_only,
+            top_crop_only=top_crop_only,
+            top_crop_fraction=top_crop_fraction,
         )
 
         if classifier is not None:
@@ -627,6 +1008,8 @@ class YoloxTrainer:
                 device=device,
                 classifier=classifier,
                 positive_images_only=positive_images_only,
+                top_crop_only=top_crop_only,
+                top_crop_fraction=top_crop_fraction,
                 conf_threshold=self.model_config.get("conf_threshold", 0.25),
                 nms_threshold=self.model_config.get("nms_threshold", 0.45),
             )
@@ -643,6 +1026,8 @@ class YoloxTrainer:
         device: str,
         classifier,
         positive_images_only: bool,
+        top_crop_only: bool = False,
+        top_crop_fraction: float = DEFAULT_TOP_CROP_FRACTION,
         conf_threshold: float = 0.1,
         nms_threshold: float = 0.45,
         iou_threshold: float = 0.5,
@@ -694,10 +1079,13 @@ class YoloxTrainer:
                     continue
 
                 ih, iw = image.shape[:2]
-                scale = min(tw / iw, th / ih)
-                new_w, new_h = int(iw * scale), int(ih * scale)
-                canvas = np.full((th, tw, 3), 114, dtype=np.uint8)
-                canvas[:new_h, :new_w] = cv2.resize(image, (new_w, new_h))
+                detector_image = (
+                    crop_top_fraction(image, top_crop_fraction)
+                    if top_crop_only
+                    else image
+                )
+                effective_h = detector_image.shape[0]
+                canvas, scale = letterbox_image(detector_image, (th, tw))
                 img_t = canvas[:, :, ::-1].transpose(2, 0, 1).copy().astype(np.float32)
                 img_tensor = torch.from_numpy(img_t).unsqueeze(0).to(device)
 
@@ -724,6 +1112,8 @@ class YoloxTrainer:
 
                 output = dets[0].cpu()
                 pred_boxes = output[:, :4] / scale  # xyxy in original image coords
+                pred_boxes[:, 0::2].clamp_(0, float(iw))
+                pred_boxes[:, 1::2].clamp_(0, float(effective_h))
                 gt_arr = np.array(gt_boxes, dtype=np.float32)
                 pred_arr = pred_boxes.numpy()
 

@@ -21,7 +21,10 @@ class BaseTracker(ABC):
 
     @abstractmethod
     def update(
-        self, detections: List[Detection], frame_id: int
+        self,
+        detections: List[Detection],
+        frame_id: int,
+        image_shape: tuple[int, int] | None = None,
     ) -> List[TrackedObject]:
         """Associate *detections* with existing tracks and return updated list."""
 

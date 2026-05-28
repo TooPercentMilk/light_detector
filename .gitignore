@@ -219,4 +219,4 @@ data/
 
 # Runs
 runs/viz/
-runs/eval/false_negatives/
+runs/eval/

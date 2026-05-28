@@ -14,6 +14,12 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from adas_perception.traffic_light.preprocess import (
+    DEFAULT_TOP_CROP_FRACTION,
+    crop_top_fraction,
+    letterbox_image,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +46,9 @@ def _positive_image_ids(coco) -> set[int]:
 class _COCOValDataset(Dataset):
     """Minimal COCO dataset for evaluation that applies letterbox resizing.
 
-    Each item returns ``(image_tensor, None, (orig_h, orig_w), image_id)``.
+    Each item returns ``(image_tensor, None, (model_h, orig_w), image_id)``.
+    With top-crop inference enabled, ``model_h`` is the cropped source height
+    used for letterbox scaling, while COCO ground truth remains full-frame.
     """
 
     def __init__(
@@ -48,13 +56,18 @@ class _COCOValDataset(Dataset):
         data_dir: str,
         json_file: str,
         name: str = "val",
-        img_size: Tuple[int, int] = (640, 640),
+        img_size: Tuple[int, int] = (1280, 1280),
         image_ids: list[int] | None = None,
         positive_images_only: bool = False,
+        top_crop_only: bool = False,
+        top_crop_fraction: float = DEFAULT_TOP_CROP_FRACTION,
+        top_third_only: bool = False,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.image_dir = self.data_dir / name
         self.img_size = img_size  # (H, W)
+        self.top_crop_only = top_crop_only or top_third_only
+        self.top_crop_fraction = float(top_crop_fraction)
 
         from pycocotools.coco import COCO
 
@@ -92,14 +105,11 @@ class _COCOValDataset(Dataset):
             raise RuntimeError(f"Could not read image: {img_path}")
 
         ih, iw = image.shape[:2]
+        if self.top_crop_only:
+            image = crop_top_fraction(image, self.top_crop_fraction)
+        effective_h = image.shape[0]
         th, tw = self.img_size
-        r = min(tw / iw, th / ih)
-        new_w, new_h = int(iw * r), int(ih * r)
-        resized = cv2.resize(image, (new_w, new_h))
-
-        # Letterbox: paste onto 114-padded canvas
-        canvas = np.full((th, tw, 3), 114, dtype=np.uint8)
-        canvas[:new_h, :new_w] = resized
+        canvas, _ = letterbox_image(image, (th, tw))
 
         # HWC BGR → CHW RGB float32 (YOLOX convention: no /255)
         img_t = canvas[:, :, ::-1].transpose(2, 0, 1).copy()
@@ -108,7 +118,7 @@ class _COCOValDataset(Dataset):
         return (
             torch.from_numpy(img_t),
             None,
-            (ih, iw),
+            (effective_h, iw),
             img_id,
         )
 
@@ -125,13 +135,16 @@ def evaluate(
     model: Any,
     dataset_path: str,
     iou_thresholds: list[float] | None = None,
-    input_size: tuple[int, int] = (640, 640),
+    input_size: tuple[int, int] = (1280, 1280),
     conf_threshold: float = 0.01,
     nms_threshold: float = 0.65,
-    batch_size: int = 8,
+    batch_size: int = 4,
     device: str | None = None,
     image_ids: list[int] | None = None,
     positive_images_only: bool = False,
+    top_crop_only: bool = False,
+    top_crop_fraction: float = DEFAULT_TOP_CROP_FRACTION,
+    top_third_only: bool = False,
 ) -> Dict[str, float]:
     """Evaluate a detector on a COCO-format dataset.
 
@@ -155,6 +168,9 @@ def evaluate(
         Inference device; auto-detected from *model* when ``None``.
     image_ids:
         If given, restrict COCO evaluation to this subset of image IDs.
+    top_crop_only:
+        If true, feed only the top crop of each image to the detector. Ground
+        truth remains full-frame so objects below the cutoff count as misses.
 
     Returns
     -------
@@ -182,6 +198,9 @@ def evaluate(
         img_size=input_size,
         image_ids=image_ids,
         positive_images_only=positive_images_only,
+        top_crop_only=top_crop_only,
+        top_crop_fraction=top_crop_fraction,
+        top_third_only=top_third_only,
     )
     if len(val_dataset) == 0:
         logger.warning("Validation dataset is empty after image filtering")
@@ -219,6 +238,8 @@ def evaluate(
                 input_size[0] / float(img_h), input_size[1] / float(img_w)
             )
             bboxes /= scale
+            bboxes[:, 0::2].clamp_(0, float(img_w))
+            bboxes[:, 1::2].clamp_(0, float(img_h))
 
             # xyxy → xywh (COCO format)
             bboxes_xywh = bboxes.clone()
@@ -229,6 +250,8 @@ def evaluate(
             cls = output[:, 6].numpy().astype(int)
 
             for j in range(len(bboxes_xywh)):
+                if bboxes_xywh[j, 2] <= 0 or bboxes_xywh[j, 3] <= 0:
+                    continue
                 cat_idx = cls[j]
                 if cat_idx < len(val_dataset.class_ids):
                     cat_id = val_dataset.class_ids[cat_idx]

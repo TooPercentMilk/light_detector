@@ -49,7 +49,11 @@ class StateClassifier(BaseClassifier):
 
         weights_path = Path(model_path)
         if weights_path.is_file():
-            state_dict = torch.load(weights_path, map_location=self.device, weights_only=True)
+            try:
+                ckpt = torch.load(weights_path, map_location=self.device, weights_only=True)
+            except TypeError:
+                ckpt = torch.load(weights_path, map_location=self.device)
+            state_dict = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
             self.model.load_state_dict(state_dict)
             logger.info("StateClassifier: loaded weights from %s", model_path)
         else:

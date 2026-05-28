@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-dir", default="runs/train_classifier")
     parser.add_argument("--input-size", nargs=2, type=int, default=[32, 64], metavar=("W", "H"))
     parser.add_argument("--no-pretrained", action="store_true", help="Skip ImageNet-pretrained backbone")
+    parser.add_argument("--resume", default=None, help="Resume training from checkpoint")
     args = parser.parse_args(argv)
 
     from adas_perception.traffic_light.state.trainer import ClassifierTrainer
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         lr=args.lr,
         device=args.device,
         num_workers=args.num_workers,
+        resume_checkpoint=args.resume,
     )
 
 

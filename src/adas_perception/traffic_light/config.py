@@ -12,7 +12,7 @@ class DetectorConfig:
     type: str = "yolox"
     model_path: str = "weights/yolox_tl.pth"
     device: str = "cuda"
-    input_size: List[int] = field(default_factory=lambda: [640, 640])
+    input_size: List[int] = field(default_factory=lambda: [1280, 1280])
     confidence_threshold: float = 0.25
     nms_threshold: float = 0.45
     num_classes: int = 1
@@ -47,10 +47,13 @@ class TemporalSmootherConfig:
 
 @dataclass
 class PreprocessConfig:
-    input_size: List[int] = field(default_factory=lambda: [640, 640])
+    input_size: List[int] = field(default_factory=lambda: [1280, 1280])
     mean: List[float] = field(default_factory=lambda: [0.485, 0.456, 0.406])
     std: List[float] = field(default_factory=lambda: [0.229, 0.224, 0.225])
     swap_rb: bool = True
+    top_crop_only: bool = False
+    top_crop_fraction: float = 0.5
+    top_third_only: bool = False
 
 
 @dataclass

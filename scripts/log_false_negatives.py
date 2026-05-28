@@ -417,17 +417,19 @@ def _miss_reason(
     iou_threshold: float,
 ) -> str:
     best_final, best_final_iou = _best_detection_for_gt(gt, final_detections)
-    if best_final is not None and best_final_iou is not None and best_final_iou >= iou_threshold:
-        if best_final.global_idx in matched_det_ids:
-            return "duplicate_or_shared_detection"
-        return "unmatched_after_greedy_matching"
+    if best_final is not None and best_final_iou is not None:
+        if best_final_iou >= iou_threshold:
+            if best_final.global_idx in matched_det_ids:
+                return "duplicate_or_shared_detection"
+            return "unmatched_after_greedy_matching"
+        return "low_iou"
 
     best_any, best_any_iou = _best_detection_for_gt(gt, all_detections)
     if best_any is None or best_any_iou is None:
         return "no_candidate_detection"
-    if best_any_iou >= iou_threshold and best_any.score < confidence_threshold:
+    if best_any.score < confidence_threshold:
         return "below_confidence"
-    return "low_iou"
+    return "no_candidate_detection"
 
 
 def _crop_with_padding(
@@ -605,6 +607,7 @@ def _build_false_negative_rows(
             "best_candidate_bbox_xywh": list(best_any.bbox_xywh) if best_any is not None else None,
             "best_final_iou": best_final_iou,
             "best_final_score": best_final.score if best_final is not None else None,
+            "best_final_bbox_xywh": list(best_final.bbox_xywh) if best_final is not None else None,
             "original_copy_path": "",
             "overlay_path": "",
             "crop_path": "",
@@ -673,6 +676,7 @@ def _write_csv(rows: list[dict[str, Any]], csv_path: Path) -> None:
         "best_candidate_bbox_xywh",
         "best_final_iou",
         "best_final_score",
+        "best_final_bbox_xywh",
         "original_copy_path",
         "overlay_path",
         "crop_path",
@@ -687,6 +691,7 @@ def _write_csv(rows: list[dict[str, Any]], csv_path: Path) -> None:
             out = {key: row.get(key) for key in fieldnames}
             out["gt_bbox_xywh"] = json.dumps(row.get("gt_bbox_xywh", []))
             out["best_candidate_bbox_xywh"] = json.dumps(row.get("best_candidate_bbox_xywh"))
+            out["best_final_bbox_xywh"] = json.dumps(row.get("best_final_bbox_xywh"))
             writer.writerow(out)
 
 
@@ -904,7 +909,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", default="configs/val_best.yaml")
     parser.add_argument("--dataset", default="data/coco_tl")
     parser.add_argument("--device", default=None, help="Override detector device, e.g. cpu or cuda")
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--confidence-threshold", type=float, default=None)
     parser.add_argument("--candidate-confidence-min", type=float, default=0.01)

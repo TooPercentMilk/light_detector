@@ -88,19 +88,29 @@ class ByteTrackWrapper(BaseTracker):
             self._tracker = BYTETracker(args, frame_rate=config.frame_rate)
 
     def update(
-        self, detections: List[Detection], frame_id: int
+        self,
+        detections: List[Detection],
+        frame_id: int,
+        image_shape: tuple[int, int] | None = None,
     ) -> List[TrackedObject]:
         self._frame_id = frame_id
 
-        if self._tracker is None or len(detections) == 0:
+        if self._tracker is None:
             return []
 
         # BYTETracker expects an (N, 5) numpy array: x1, y1, x2, y2, score
-        det_array = np.array(
-            [[*d.bbox, d.confidence] for d in detections], dtype=np.float32
-        )
+        if detections:
+            det_array = np.array(
+                [[*d.bbox, d.confidence] for d in detections], dtype=np.float32
+            )
+        else:
+            det_array = np.empty((0, 5), dtype=np.float32)
 
-        img_h, img_w = self.config.track_buffer, self.config.track_buffer
+        if image_shape is not None:
+            img_h, img_w = int(image_shape[0]), int(image_shape[1])
+        else:
+            img_h, img_w = self.config.track_buffer, self.config.track_buffer
+
         # BYTETracker.update signature: (output_results, img_info, img_size)
         online_targets = self._tracker.update(
             det_array,

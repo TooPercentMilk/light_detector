@@ -22,9 +22,13 @@ Usage::
     python scripts/train.py --target detector --dataset data/coco_tl \
         --det-small-light-flip
 
-    # Resume detector training from checkpoint
+    # Detector only, train on only the top half of each image
     python scripts/train.py --target detector --dataset data/coco_tl \
-        --det-resume runs/train/detector/best.pth --det-epochs 80
+        --det-top-half-only
+
+    # Resume detector training from latest full checkpoint
+    python scripts/train.py --target detector --dataset data/coco_tl \
+        --det-resume runs/train/detector/latest.pth --det-epochs 80
 
     # Classifier only
     python scripts/train.py --target classifier --dataset data/coco_tl --cls-epochs 30
@@ -56,11 +60,9 @@ def train_detector(args: argparse.Namespace) -> Path:
     logger.info("DETECTOR TRAINING")
     logger.info("=" * 60)
 
-    # If resuming, use the resume checkpoint; otherwise use pretrained backbone
     pretrained = args.det_pretrained
     if args.det_resume:
-        pretrained = args.det_resume
-        logger.info("Resuming from checkpoint: %s", args.det_resume)
+        logger.info("Resuming detector training from checkpoint: %s", args.det_resume)
 
     dev = args.device or ("cuda" if _cuda_available() else "cpu")
     mosaic_prob = 1.0
@@ -77,6 +79,7 @@ def train_detector(args: argparse.Namespace) -> Path:
             "input_size": args.det_input_size,
             "device": dev,
             "pretrained_ckpt": pretrained,
+            "resume_ckpt": args.det_resume,
             "exp_name": args.det_exp_name,
             "data_num_workers": args.num_workers,
             "conf_threshold": 0.05,
@@ -86,6 +89,8 @@ def train_detector(args: argparse.Namespace) -> Path:
             "flip_prob": flip_prob,
             "small_light_flip": args.det_small_light_flip,
             "small_light_flip_range": tuple(args.det_small_light_flip_range),
+            "top_crop_only": args.det_top_crop_only,
+            "top_crop_fraction": args.det_top_crop_fraction,
         },
         output_dir=str(output_dir),
     )
@@ -143,6 +148,7 @@ def train_classifier(args: argparse.Namespace) -> Path:
         device=args.device,
         num_workers=args.num_workers,
         patience=args.cls_patience,
+        resume_checkpoint=args.cls_resume,
     )
 
     final = output_dir / "tl_state_classifier.pth"
@@ -193,10 +199,10 @@ def main(argv: list[str] | None = None) -> None:
     # ---- detector ----
     det = parser.add_argument_group("detector")
     det.add_argument("--det-epochs", type=int, default=50)
-    det.add_argument("--det-batch-size", type=int, default=16)
+    det.add_argument("--det-batch-size", type=int, default=8)
     det.add_argument("--det-lr", type=float, default=1e-3)
     det.add_argument("--det-num-classes", type=int, default=1)
-    det.add_argument("--det-input-size", nargs=2, type=int, default=[960, 960], metavar=("W", "H"))
+    det.add_argument("--det-input-size", nargs=2, type=int, default=[1280, 1280], metavar=("H", "W"))
     det.add_argument("--det-pretrained", default="weights/yolox_m.pth", help="Backbone checkpoint for fine-tuning")
     det.add_argument("--det-resume", default=None, help="Resume training from checkpoint (overrides --det-pretrained)")
     det.add_argument("--det-exp-name", default="yolox-m", help="YOLOX experiment variant (must match --det-pretrained)")
@@ -239,6 +245,20 @@ def main(argv: list[str] | None = None) -> None:
         default=1,
         help="Run val mAP evaluation every N epochs for early stopping (0 = use train loss instead)",
     )
+    det.add_argument(
+        "--det-top-half-only",
+        "--det-top-40-only",
+        "--det-top-third-only",
+        dest="det_top_crop_only",
+        action="store_true",
+        help="Train with detector inputs cropped to the top half of each image and padded to the YOLO input size",
+    )
+    det.add_argument(
+        "--det-top-crop-fraction",
+        type=float,
+        default=0.5,
+        help="Image-height fraction kept when --det-top-half-only is enabled",
+    )
 
     # ---- classifier ----
     cls = parser.add_argument_group("classifier")
@@ -248,6 +268,7 @@ def main(argv: list[str] | None = None) -> None:
     cls.add_argument("--cls-num-classes", type=int, default=4)
     cls.add_argument("--cls-input-size", nargs=2, type=int, default=[32, 64], metavar=("W", "H"))
     cls.add_argument("--cls-no-pretrained", action="store_true", help="Skip ImageNet-pretrained backbone")
+    cls.add_argument("--cls-resume", default=None, help="Resume classifier training from checkpoint")
     cls.add_argument("--cls-patience", type=int, default=5, help="Early stopping patience (0 = disabled)")
 
     args = parser.parse_args(argv)
@@ -255,6 +276,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--det-small-light-flip-range MIN_PX must be non-negative")
     if args.det_small_light_flip_range[1] <= args.det_small_light_flip_range[0]:
         parser.error("--det-small-light-flip-range MAX_PX must be greater than MIN_PX")
+    if not 0.0 < args.det_top_crop_fraction <= 1.0:
+        parser.error("--det-top-crop-fraction must be in the range (0, 1]")
 
     if args.target in ("detector", "both"):
         train_detector(args)

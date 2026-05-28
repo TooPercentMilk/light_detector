@@ -1114,7 +1114,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", default="configs/val_best.yaml")
     parser.add_argument("--dataset", default="data/coco_tl")
     parser.add_argument("--device", default=None, help="Override detector device, e.g. cpu or cuda")
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--nms-threshold", type=float, default=None)
     parser.add_argument("--confidence-min", type=float, default=0.01)

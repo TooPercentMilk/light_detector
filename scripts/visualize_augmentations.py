@@ -71,8 +71,22 @@ def main() -> None:
     parser.add_argument("--num-samples", type=int, default=8)
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Save images here instead of displaying")
-    parser.add_argument("--input-size", nargs=2, type=int, default=[640, 640],
+    parser.add_argument("--input-size", nargs=2, type=int, default=[1280, 1280],
                         metavar=("H", "W"))
+    parser.add_argument(
+        "--top-half-only",
+        "--top-40-only",
+        "--top-third-only",
+        dest="top_crop_only",
+        action="store_true",
+        help="Visualize samples using only the top half of each source image",
+    )
+    parser.add_argument(
+        "--top-crop-fraction",
+        type=float,
+        default=0.5,
+        help="Image-height fraction kept when --top-half-only is enabled",
+    )
 
     # Augmentation toggles
     parser.add_argument("--no-mosaic", action="store_true")
@@ -90,6 +104,8 @@ def main() -> None:
     parser.add_argument("--flip-prob", type=float, default=0.5)
 
     args = parser.parse_args()
+    if not 0.0 < args.top_crop_fraction <= 1.0:
+        parser.error("--top-crop-fraction must be in the range (0, 1]")
 
     dataset = _COCODetectionDataset(
         data_dir=args.dataset,
@@ -103,6 +119,8 @@ def main() -> None:
         hsv_sat=0.0 if args.no_hsv else args.hsv_sat,
         hsv_val=0.0 if args.no_hsv else args.hsv_val,
         flip_prob=0.0 if args.no_flip else args.flip_prob,
+        top_crop_only=args.top_crop_only,
+        top_crop_fraction=args.top_crop_fraction,
     )
 
     logger.info("Dataset: %d images", len(dataset))

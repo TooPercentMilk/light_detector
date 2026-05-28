@@ -40,3 +40,7 @@ class TemporalSmoother:
     def remove_track(self, track_id: int) -> None:
         """Drop history for a track that is no longer alive."""
         self._history.pop(track_id, None)
+
+    def reset(self) -> None:
+        """Clear all tracked state history."""
+        self._history.clear()
