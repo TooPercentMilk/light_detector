@@ -126,7 +126,7 @@ class _COCODetectionDataset(Dataset):
         augment: bool = True,
         positive_images_only: bool = False,
         mosaic_prob: float = 1.0,
-        scale_jitter_range: Tuple[float, float] = (0.5, 1.5),
+        scale_jitter_range: Tuple[float, float] = (0.8, 1.2),
         hsv_hue: float = 0.015,
         hsv_sat: float = 0.7,
         hsv_val: float = 0.4,

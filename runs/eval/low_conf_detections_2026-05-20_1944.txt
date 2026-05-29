@@ -42,22 +42,7 @@ All GT baseline: 1827/26414 (6.9%).
 Enrichment vs baseline: 1.51x.
 Definition: distant proxy = sqrt(GT bbox area) < 12.0 px..
 
-3. Are they partially occluded?
-Answer: Not directly measurable from these annotations.
-Proxy A, clipped at image boundary: 13/3365 (0.4%) vs baseline 189/26414 (0.7%).
-Proxy B, overlaps another GT box: 95/3365 (2.8%) vs baseline 864/26414 (3.3%).
-Note: LISA COCO annotations do not include occlusion labels. This uses clipped-at-image-edge and overlap-with-neighbor-GT proxies only.
-
-4. Are they motion-blurred?
-Answer: No, using the blur proxy.
-Low-blur matches: 838/3365 (24.9%).
-All GT low-blur baseline: 5283/26414 (20.0%).
-Blur threshold: 70.12 (baseline_p20).
-Blur score summary, low-confidence matches: median=289.6, mean=478.
-Blur score summary, all GT baseline: median=231.2, mean=401.4.
-Note: Uses variance of Laplacian on a padded GT crop; lower scores are blurrier. This is a blur/sharpness proxy, not a true motion-label.
-
-5. Are yellow/red/green equally represented?
+3. Are yellow/red/green equally represented?
 Answer: No (max absolute delta from an even RGB split = 32.0%).
 color                   low     low%       gt      gt%   enrich
 ----------------------------------------------------------------
@@ -66,13 +51,13 @@ yellow                   44     1.3%      981     3.7%    0.35x
 green                  1402    41.7%    12558    47.5%    0.88x
 unknown                   0     0.0%        0     0.0%      n/a
 
-6. Are they at image edges?
+4. Are they at image edges?
 Answer: No.
 Low-confidence edge matches: 35/3365 (1.0%).
 All GT edge baseline: 577/26414 (2.2%).
 Definition: GT box touches a margin of max(8.0 px, 5.0% of image dimension).
 
-7. Are they poorly boxed?
+5. Are they poorly boxed?
 Answer: Some are borderline.
 Poor-box proxy: 1299/3365 (38.6%) with IoU < 0.6.
 IoU summary: median=0.6367, mean=0.6567, p10=0.5344.
@@ -87,7 +72,7 @@ iou                     low     low%       gt      gt%   enrich
 0.75-0.90               711    21.1%        0     0.0%      n/a
 0.90-1.00                23     0.7%        0     0.0%      n/a
 
-8. Are they from specific LISA sequences?
+6. Are they from specific LISA sequences?
 Answer: No strong sequence concentration by the configured rule.
 Configured rule: sequence enrichment >= 1.5x with at least 5 matches.
 
