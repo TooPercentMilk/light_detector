@@ -30,12 +30,19 @@ from src.adas_perception.traffic_light.config import (
     load_config,
 )
 from src.adas_perception.traffic_light.node import TrafficLightNode
+from src.adas_perception.traffic_light.preprocess import top_fraction_height
 from src.adas_perception.traffic_light.viz.overlays import draw_traffic_lights
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
+
+
+def _draw_crop_boundary(frame, fraction: float) -> None:
+    y = top_fraction_height(frame.shape[0], fraction)
+    if 0 < y < frame.shape[0]:
+        cv2.line(frame, (0, y), (frame.shape[1] - 1, y), (0, 255, 0), 3)
 
 
 def main() -> None:
@@ -78,7 +85,28 @@ def main() -> None:
         metavar=("H", "W"),
         help="Detector/preprocessor input size; overrides --image-size",
     )
+    parser.add_argument(
+        "--top-half-only",
+        "--top-40-only",
+        "--top-third-only",
+        dest="top_crop_only",
+        action="store_true",
+        help="Run detector inference on only the configured top crop of each frame",
+    )
+    parser.add_argument(
+        "--top-crop-fraction",
+        type=float,
+        default=None,
+        help="Image-height fraction kept when top-crop inference is enabled",
+    )
+    parser.add_argument(
+        "--draw-crop-boundary",
+        action="store_true",
+        help="Draw the configured top-crop cutoff line on annotated frames",
+    )
     args = parser.parse_args()
+    if args.top_crop_fraction is not None and not 0.0 < args.top_crop_fraction <= 1.0:
+        parser.error("--top-crop-fraction must be in the range (0, 1]")
 
     # Load config and optionally override device
     config = load_config(args.config)
@@ -87,9 +115,19 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
     apply_detector_input_size(config, input_size)
+    if args.top_crop_fraction is not None:
+        config.preprocess.top_crop_fraction = args.top_crop_fraction
+    if args.top_crop_only:
+        config.preprocess.top_crop_only = True
+        config.preprocess.top_third_only = False
     if args.device:
         config.detector.device = args.device
         config.classifier.device = args.device
+    logger.info(
+        "Top crop: enabled=%s | fraction=%.3f",
+        config.preprocess.top_crop_only or config.preprocess.top_third_only,
+        config.preprocess.top_crop_fraction,
+    )
 
     # Build pipeline
     node = TrafficLightNode(config)
@@ -131,6 +169,8 @@ def main() -> None:
         total_detections += len(results)
 
         annotated = draw_traffic_lights(image, results)
+        if args.draw_crop_boundary:
+            _draw_crop_boundary(annotated, config.preprocess.top_crop_fraction)
 
         out_path = output_dir / filepath.name
         cv2.imwrite(str(out_path), annotated)

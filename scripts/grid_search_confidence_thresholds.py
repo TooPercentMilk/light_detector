@@ -137,6 +137,8 @@ def _collect_detections(
     device: torch.device,
     num_workers: int,
     positive_images_only: bool,
+    top_crop_only: bool,
+    top_crop_fraction: float,
 ) -> tuple[list[dict[str, Any]], Any, list[int]]:
     """Run model inference once and return COCO-format detection records."""
     from adas_perception.traffic_light.detector.evaluator import _COCOValDataset, _collate_fn
@@ -148,6 +150,8 @@ def _collect_detections(
         name="val",
         img_size=input_size,
         positive_images_only=positive_images_only,
+        top_crop_only=top_crop_only,
+        top_crop_fraction=top_crop_fraction,
     )
     if len(val_dataset) == 0:
         raise RuntimeError("Validation dataset is empty after image filtering")
@@ -183,6 +187,8 @@ def _collect_detections(
             bboxes = output[:, 0:4]
             scale = min(input_size[0] / float(img_h), input_size[1] / float(img_w))
             bboxes /= scale
+            bboxes[:, 0::2].clamp_(0, float(img_w))
+            bboxes[:, 1::2].clamp_(0, float(img_h))
 
             bboxes_xywh = bboxes.clone()
             bboxes_xywh[:, 2] -= bboxes_xywh[:, 0]
@@ -192,6 +198,8 @@ def _collect_detections(
             cls = output[:, 6].numpy().astype(int)
 
             for j in range(len(bboxes_xywh)):
+                if bboxes_xywh[j, 2] <= 0 or bboxes_xywh[j, 3] <= 0:
+                    continue
                 cat_idx = int(cls[j])
                 if cat_idx >= len(val_dataset.class_ids):
                     continue
@@ -500,6 +508,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Evaluate only val images that contain at least one valid annotation",
     )
     parser.add_argument(
+        "--top-half-only",
+        "--top-40-only",
+        "--top-third-only",
+        dest="top_crop_only",
+        action="store_true",
+        help="Feed detector inference the configured top crop while keeping full-frame ground truth",
+    )
+    parser.add_argument(
+        "--top-crop-fraction",
+        type=float,
+        default=None,
+        help="Image-height fraction kept when top-crop inference is enabled",
+    )
+    parser.add_argument(
         "--optimize-metric",
         default=DEFAULT_OPTIMIZE_METRIC,
         choices=["f1", "precision", "recall", "mAP", "mAP_50", "mAP_75"],
@@ -511,6 +533,8 @@ def main(argv: list[str] | None = None) -> None:
         help="Output prefix without extension. Default: runs/eval/conf_threshold_grid_<timestamp>",
     )
     args = parser.parse_args(argv)
+    if args.top_crop_fraction is not None and not 0.0 < args.top_crop_fraction <= 1.0:
+        parser.error("--top-crop-fraction must be in the range (0, 1]")
 
     if (
         args.thresholds is None
@@ -541,6 +565,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     nms_threshold = args.nms_threshold if args.nms_threshold is not None else cfg.detector.nms_threshold
     input_size = tuple(int(v) for v in cfg.detector.input_size)
+    top_crop_only = bool(
+        args.top_crop_only
+        or cfg.preprocess.top_crop_only
+        or cfg.preprocess.top_third_only
+    )
+    top_crop_fraction = (
+        float(cfg.preprocess.top_crop_fraction)
+        if args.top_crop_fraction is None
+        else float(args.top_crop_fraction)
+    )
+    logger.info("Top crop: enabled=%s | fraction=%.3f", top_crop_only, top_crop_fraction)
 
     detections, coco_gt, image_ids = _collect_detections(
         model=model,
@@ -552,6 +587,8 @@ def main(argv: list[str] | None = None) -> None:
         device=device,
         num_workers=args.num_workers,
         positive_images_only=args.positive_images_only,
+        top_crop_only=top_crop_only,
+        top_crop_fraction=top_crop_fraction,
     )
 
     rows = _evaluate_thresholds(
@@ -574,6 +611,9 @@ def main(argv: list[str] | None = None) -> None:
         "nms_threshold": float(nms_threshold),
         "iou_threshold": float(args.iou_threshold),
         "positive_images_only": bool(args.positive_images_only),
+        "top_crop_only": bool(top_crop_only),
+        "top_crop_fraction": float(top_crop_fraction),
+        "full_frame_ground_truth": True,
         "num_images": len(image_ids),
         "num_cached_detections": len(detections),
         "optimize_metric": args.optimize_metric,

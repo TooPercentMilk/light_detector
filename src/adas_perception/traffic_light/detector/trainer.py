@@ -627,9 +627,10 @@ class YoloxTrainer:
             else None
         )
 
-        # When val_every > 0, best.pth is saved/patience tracked by val mAP_50.
+        # When val_every > 0, best.pth is saved/patience tracked by COCO
+        # val mAP averaged over IoU 0.50:0.95.
         # When val_every == 0, fall back to training-loss tracking (old behaviour).
-        best_val_map50 = -1.0
+        best_val_map = -1.0
         best_loss = float("inf")
         epochs_no_improve = 0
         start_epoch = 0
@@ -639,7 +640,10 @@ class YoloxTrainer:
         if isinstance(resume_data, dict):
             start_epoch = int(resume_data.get("epoch", 0) or 0)
             last_completed_epoch = start_epoch
-            best_val_map50 = float(resume_data.get("best_val_map50", best_val_map50))
+            if "best_val_map" in resume_data:
+                best_val_map = float(resume_data.get("best_val_map", best_val_map))
+            elif resume_data.get("metric_name") == "val_mAP":
+                best_val_map = float(resume_data.get("metric_value", best_val_map))
             best_loss = float(resume_data.get("best_loss", best_loss))
             epochs_no_improve = int(resume_data.get("epochs_no_improve", epochs_no_improve) or 0)
             saved_history = resume_data.get("loss_history", [])
@@ -721,7 +725,7 @@ class YoloxTrainer:
                 "scaler": _to_cpu(scaler.state_dict()),
                 "ema_model": _state_dict_to_cpu(ema.state_dict()),
                 "ema_decay": ema.decay,
-                "best_val_map50": float(best_val_map50),
+                "best_val_map": float(best_val_map),
                 "best_loss": float(best_loss),
                 "epochs_no_improve": int(epochs_no_improve),
                 "metric_name": metric_name,
@@ -813,32 +817,33 @@ class YoloxTrainer:
                     positive_images_only=positive_images_only,
                     classifier=classifier,
                 )
+                val_map = val_metrics.get("mAP", 0.0)
                 val_map50 = val_metrics.get("mAP_50", 0.0)
                 e2e = val_metrics.get("e2e_accuracy")
                 log_parts = [
                     f"Epoch {epoch + 1}/{epochs}",
                     f"train_loss={avg:.4f}",
                     f"val_loss={val_loss:.4f}" if val_loss is not None else "val_loss=n/a",
+                    f"val_mAP={val_map:.4f}",
                     f"val_mAP_50={val_map50:.4f}",
-                    f"val_mAP={val_metrics.get('mAP', 0.0):.4f}",
                 ]
                 if e2e is not None:
                     log_parts.append(f"e2e_acc={e2e * 100:.1f}%")
                 logger.info(" | ".join(log_parts))
-                latest_metric_name = "val_mAP_50"
-                latest_metric_value = val_map50
+                latest_metric_name = "val_mAP"
+                latest_metric_value = val_map
 
-                if val_map50 > best_val_map50:
-                    best_val_map50 = val_map50
+                if val_map > best_val_map:
+                    best_val_map = val_map
                     epochs_no_improve = 0
                     best_path = self.output_dir / "best.pth"
-                    save_checkpoint(best_path, epoch + 1, "val_mAP_50", val_map50)
-                    logger.info("New best val_mAP_50=%.4f — saved %s", val_map50, best_path)
+                    save_checkpoint(best_path, epoch + 1, "val_mAP", val_map)
+                    logger.info("New best val_mAP=%.4f - saved %s", val_map, best_path)
                 else:
                     epochs_no_improve += 1
                     if patience > 0 and epochs_no_improve >= patience:
                         logger.info(
-                            "Early stopping: val mAP_50 did not improve for %d epochs",
+                            "Early stopping: val mAP did not improve for %d epochs",
                             patience,
                         )
                         stop_training = True

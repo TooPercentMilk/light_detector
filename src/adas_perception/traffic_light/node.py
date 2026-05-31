@@ -110,7 +110,14 @@ class TrafficLightNode:
         detections = clipped_detections
 
         # 4. Track
-        tracked = self.tracker.update(detections, frame_id, image.shape[:2])
+        tracked = self.tracker.update(detections, frame_id, (max_y, image.shape[1]))
+        clipped_tracked = []
+        for obj in tracked:
+            obj.bbox[0::2] = np.clip(obj.bbox[0::2], 0, image.shape[1])
+            obj.bbox[1::2] = np.clip(obj.bbox[1::2], 0, max_y)
+            if obj.bbox[2] > obj.bbox[0] and obj.bbox[3] > obj.bbox[1]:
+                clipped_tracked.append(obj)
+        tracked = clipped_tracked
 
         # 5. Classify state per tracked object
         results: List[TrafficLight] = []

@@ -127,6 +127,8 @@ def evaluate_by_size(
     iou_threshold: float,
     bin_edges: list[float],
     positive_images_only: bool,
+    top_crop_only: bool = False,
+    top_crop_fraction: float | None = None,
     input_size: tuple[int, int] | None = None,
 ) -> dict:
     """Run the pipeline on the val split and aggregate metrics by box size."""
@@ -142,6 +144,16 @@ def evaluate_by_size(
     if device:
         cfg.detector.device = device
         cfg.classifier.device = device
+    if top_crop_fraction is not None:
+        cfg.preprocess.top_crop_fraction = top_crop_fraction
+    if top_crop_only:
+        cfg.preprocess.top_crop_only = True
+        cfg.preprocess.top_third_only = False
+    logger.info(
+        "Top crop: enabled=%s | fraction=%.3f",
+        cfg.preprocess.top_crop_only or cfg.preprocess.top_third_only,
+        cfg.preprocess.top_crop_fraction,
+    )
 
     node = TrafficLightNode(cfg)
 
@@ -301,6 +313,8 @@ def evaluate_by_size(
         "input_size": list(input_size) if input_size is not None else list(cfg.detector.input_size),
         "iou_threshold": iou_threshold,
         "positive_images_only": positive_images_only,
+        "top_crop_only": bool(cfg.preprocess.top_crop_only or cfg.preprocess.top_third_only),
+        "top_crop_fraction": float(cfg.preprocess.top_crop_fraction),
         "bin_edges": [float(e) for e in bin_edges],
         "total": _pack(total_gt, total_matched, total_correct, total_preds, total_pred_tp),
     }
@@ -424,6 +438,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Restrict to images with at least one valid annotation.",
     )
     parser.add_argument(
+        "--top-half-only",
+        "--top-40-only",
+        "--top-third-only",
+        dest="top_crop_only",
+        action="store_true",
+        help="Run detector inference on only the configured top crop of each frame.",
+    )
+    parser.add_argument(
+        "--top-crop-fraction",
+        type=float,
+        default=None,
+        help="Image-height fraction kept when top-crop inference is enabled.",
+    )
+    parser.add_argument(
         "--plot",
         action="store_true",
         help="Also write a PNG bar chart next to the JSON output.",
@@ -440,6 +468,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--bin-edges must have at least 2 values")
     if any(args.bin_edges[i] >= args.bin_edges[i + 1] for i in range(len(args.bin_edges) - 1)):
         parser.error("--bin-edges must be strictly increasing")
+    if args.top_crop_fraction is not None and not 0.0 < args.top_crop_fraction <= 1.0:
+        parser.error("--top-crop-fraction must be in the range (0, 1]")
 
     from adas_perception.traffic_light.config import detector_input_size_from_args
 
@@ -455,11 +485,27 @@ def main(argv: list[str] | None = None) -> None:
         iou_threshold=args.iou_threshold,
         bin_edges=list(args.bin_edges),
         positive_images_only=args.positive_images_only,
+        top_crop_only=args.top_crop_only,
+        top_crop_fraction=args.top_crop_fraction,
         input_size=input_size,
     )
 
     _print_table("TOTAL (all sequences)", results["total"])
-    for key in sorted(k for k in results.keys() if k not in {"total", "config", "input_size", "iou_threshold", "positive_images_only", "bin_edges"}):
+    for key in sorted(
+        k
+        for k in results.keys()
+        if k
+        not in {
+            "total",
+            "config",
+            "input_size",
+            "iou_threshold",
+            "positive_images_only",
+            "top_crop_only",
+            "top_crop_fraction",
+            "bin_edges",
+        }
+    ):
         _print_table(key, results[key])
 
     ts = datetime.now().strftime("%Y-%m-%d_%H%M")

@@ -226,6 +226,8 @@ def _collect_detections(
     positive_images_only: bool,
     max_images: int | None,
     sequences: list[str] | None,
+    top_crop_only: bool,
+    top_crop_fraction: float,
 ) -> tuple[list[DetectionItem], Any, list[int]]:
     from adas_perception.traffic_light.detector.evaluator import _COCOValDataset, _collate_fn
     from yolox.utils import postprocess
@@ -236,6 +238,8 @@ def _collect_detections(
         name="val",
         img_size=input_size,
         positive_images_only=positive_images_only,
+        top_crop_only=top_crop_only,
+        top_crop_fraction=top_crop_fraction,
     )
 
     if sequences:
@@ -284,6 +288,8 @@ def _collect_detections(
             bboxes = output[:, 0:4]
             scale = min(input_size[0] / float(img_h), input_size[1] / float(img_w))
             bboxes /= scale
+            bboxes[:, 0::2].clamp_(0, float(img_w))
+            bboxes[:, 1::2].clamp_(0, float(img_h))
 
             bboxes_xywh = bboxes.clone()
             bboxes_xywh[:, 2] -= bboxes_xywh[:, 0]
@@ -295,6 +301,8 @@ def _collect_detections(
             cls = output[:, 6].numpy().astype(int)
 
             for idx in range(len(bboxes_xywh)):
+                if bboxes_xywh[idx, 2] <= 0 or bboxes_xywh[idx, 3] <= 0:
+                    continue
                 cat_idx = int(cls[idx])
                 if cat_idx >= len(val_dataset.class_ids):
                     continue
@@ -743,6 +751,8 @@ def _write_summary(
         f"Candidate confidence min: {parameters['candidate_confidence_min']}",
         f"NMS threshold: {parameters['nms_threshold']}",
         f"Positive images only: {parameters['positive_images_only']}",
+        f"Top crop only: {parameters['top_crop_only']}",
+        f"Top crop fraction: {parameters['top_crop_fraction']}",
         f"Sequences: {parameters['sequences']}",
         "",
         "Miss reasons",
@@ -940,6 +950,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--nms-threshold", type=float, default=None)
     parser.add_argument("--iou-threshold", type=float, default=0.5)
     parser.add_argument("--positive-images-only", action="store_true")
+    parser.add_argument(
+        "--top-half-only",
+        "--top-40-only",
+        "--top-third-only",
+        dest="top_crop_only",
+        action="store_true",
+        help="Feed detector inference the configured top crop while keeping full-frame ground truth",
+    )
+    parser.add_argument(
+        "--top-crop-fraction",
+        type=float,
+        default=None,
+        help="Image-height fraction kept when top-crop inference is enabled",
+    )
     parser.add_argument("--max-images", type=int, default=None, help="Optional debug limit on evaluated images")
     parser.add_argument("--sequences", nargs="+", default=None, help="Optional sequence filter, e.g. daySequence1")
     parser.add_argument("--size-bin-edges", type=float, nargs="+", default=DEFAULT_SIZE_BIN_EDGES)
@@ -964,6 +988,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--size-bin-edges must contain at least two values")
     if any(args.size_bin_edges[i] >= args.size_bin_edges[i + 1] for i in range(len(args.size_bin_edges) - 1)):
         parser.error("--size-bin-edges must be strictly increasing")
+    if args.top_crop_fraction is not None and not 0.0 < args.top_crop_fraction <= 1.0:
+        parser.error("--top-crop-fraction must be in the range (0, 1]")
 
     from adas_perception.traffic_light.config import detector_input_size_from_args
 
@@ -985,6 +1011,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     candidate_confidence_min = min(float(args.candidate_confidence_min), confidence_threshold)
     nms_threshold = float(args.nms_threshold) if args.nms_threshold is not None else float(cfg.detector.nms_threshold)
+    top_crop_only = bool(
+        args.top_crop_only
+        or cfg.preprocess.top_crop_only
+        or cfg.preprocess.top_third_only
+    )
+    top_crop_fraction = (
+        float(cfg.preprocess.top_crop_fraction)
+        if args.top_crop_fraction is None
+        else float(args.top_crop_fraction)
+    )
+    logger.info("Top crop: enabled=%s | fraction=%.3f", top_crop_only, top_crop_fraction)
 
     detections, coco_gt, image_ids = _collect_detections(
         model=model,
@@ -998,6 +1035,8 @@ def main(argv: list[str] | None = None) -> None:
         positive_images_only=args.positive_images_only,
         max_images=args.max_images,
         sequences=args.sequences,
+        top_crop_only=top_crop_only,
+        top_crop_fraction=top_crop_fraction,
     )
 
     gt_by_img, all_gt = _load_ground_truth(coco_gt, image_ids)
@@ -1047,6 +1086,9 @@ def main(argv: list[str] | None = None) -> None:
         "nms_threshold": nms_threshold,
         "iou_threshold": float(args.iou_threshold),
         "positive_images_only": bool(args.positive_images_only),
+        "top_crop_only": bool(top_crop_only),
+        "top_crop_fraction": float(top_crop_fraction),
+        "full_frame_ground_truth": True,
         "max_images": args.max_images,
         "sequences": args.sequences,
         "size_bin_edges": [float(v) for v in args.size_bin_edges],

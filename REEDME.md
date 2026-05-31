@@ -4,7 +4,7 @@ This project implements multimodal computer vision pipeline that can detect traf
 
 ## Demo
 
-![Traffic light detection demo](path/to/your-demo.gif)
+![Traffic light detection demo](eval_test_bytetrack - Trim.gif)
 
 ## Project Highlights
 - Object detection and tracking

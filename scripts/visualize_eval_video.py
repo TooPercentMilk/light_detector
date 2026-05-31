@@ -38,6 +38,7 @@ from adas_perception.traffic_light.config import (
     load_config,
 )
 from adas_perception.traffic_light.node import TrafficLightNode
+from adas_perception.traffic_light.preprocess import top_fraction_height
 from adas_perception.traffic_light.viz.overlays import draw_traffic_lights
 
 logging.basicConfig(
@@ -157,6 +158,12 @@ def _draw_frame_label(frame, clip_name: str, frame_idx: int, total_frames: int) 
     cv2.putText(frame, label, (13, 13 + th), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
 
+def _draw_crop_boundary(frame, fraction: float) -> None:
+    y = top_fraction_height(frame.shape[0], fraction)
+    if 0 < y < frame.shape[0]:
+        cv2.line(frame, (0, y), (frame.shape[1] - 1, y), (0, 255, 0), 3)
+
+
 def _open_writer(output_path: Path, codec: str, fps: float, size: tuple[int, int]) -> cv2.VideoWriter:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*codec)
@@ -178,6 +185,7 @@ def render_video(
     codec: str,
     output_size: tuple[int, int] | None,
     draw_frame_label: bool,
+    draw_crop_boundary: bool,
     max_frames_per_clip: int | None,
     progress_every: int,
 ) -> None:
@@ -213,6 +221,9 @@ def render_video(
             lights = node.process_frame(image, frame_id)
             total_detections += len(lights)
             annotated = draw_traffic_lights(image, lights)
+
+            if draw_crop_boundary:
+                _draw_crop_boundary(annotated, config.preprocess.top_crop_fraction)
 
             if draw_frame_label:
                 _draw_frame_label(annotated, clip_name, frame_id, len(frame_paths))
@@ -291,6 +302,25 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-size", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"), default=None)
     parser.add_argument("--draw-frame-label", action="store_true", help="Draw clip/frame text in the top-left corner")
     parser.add_argument(
+        "--draw-crop-boundary",
+        action="store_true",
+        help="Draw the configured top-crop cutoff line on annotated frames",
+    )
+    parser.add_argument(
+        "--top-half-only",
+        "--top-40-only",
+        "--top-third-only",
+        dest="top_crop_only",
+        action="store_true",
+        help="Run detector inference on only the configured top crop of each frame",
+    )
+    parser.add_argument(
+        "--top-crop-fraction",
+        type=float,
+        default=None,
+        help="Image-height fraction kept when top-crop inference is enabled",
+    )
+    parser.add_argument(
         "--max-frames-per-clip",
         type=int,
         default=None,
@@ -307,6 +337,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("--max-frames-per-clip must be positive")
     if args.output_size is not None and (args.output_size[0] <= 0 or args.output_size[1] <= 0):
         parser.error("--output-size values must be positive")
+    if args.top_crop_fraction is not None and not 0.0 < args.top_crop_fraction <= 1.0:
+        parser.error("--top-crop-fraction must be in the range (0, 1]")
 
     config_path = _project_path(args.config)
     dataset_path = _project_path(args.dataset)
@@ -326,6 +358,11 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         parser.error(str(exc))
     apply_detector_input_size(config, input_size)
+    if args.top_crop_fraction is not None:
+        config.preprocess.top_crop_fraction = args.top_crop_fraction
+    if args.top_crop_only:
+        config.preprocess.top_crop_only = True
+        config.preprocess.top_third_only = False
     _resolve_config_paths(config)
     _configure_devices(config, args.device)
     _require_runtime_files(config)
@@ -343,6 +380,11 @@ def main(argv: list[str] | None = None) -> None:
     logger.info("Detector weights: %s", config.detector.model_path)
     logger.info("Classifier weights: %s", config.classifier.model_path)
     logger.info("Split: %s | clips: %s", args.split, ", ".join(clip_names))
+    logger.info(
+        "Top crop: enabled=%s | fraction=%.3f",
+        config.preprocess.top_crop_only or config.preprocess.top_third_only,
+        config.preprocess.top_crop_fraction,
+    )
 
     render_video(
         config=config,
@@ -353,6 +395,7 @@ def main(argv: list[str] | None = None) -> None:
         codec=args.codec,
         output_size=output_size,
         draw_frame_label=args.draw_frame_label,
+        draw_crop_boundary=args.draw_crop_boundary,
         max_frames_per_clip=args.max_frames_per_clip,
         progress_every=args.progress_every,
     )
