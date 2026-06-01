@@ -1,6 +1,6 @@
 detector:
   type: "yolox"
-  model_path: "runs/train/detector/best.pth"
+  model_path: "runs/train/detector/05-30.pth"
   device: "cuda"
   input_size: [960, 960]
   confidence_threshold: 0.1

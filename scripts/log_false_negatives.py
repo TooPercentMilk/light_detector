@@ -413,12 +413,50 @@ def _match_detections(
     return matches, used_gt, used_det
 
 
-def _best_detection_for_gt(gt: GTItem, detections: list[DetectionItem]) -> tuple[DetectionItem | None, float | None]:
+def _top_crop_cutoff_y(image_height: int, top_crop_only: bool, top_crop_fraction: float) -> float | None:
+    if not top_crop_only or top_crop_fraction >= 1.0:
+        return None
+    return float(max(1, int(math.ceil(image_height * top_crop_fraction))))
+
+
+def _detection_in_review_crop(
+    det: DetectionItem,
+    image_height: int,
+    top_crop_only: bool,
+    top_crop_fraction: float,
+) -> bool:
+    cutoff_y = _top_crop_cutoff_y(image_height, top_crop_only, top_crop_fraction)
+    if cutoff_y is None:
+        return True
+    return det.bbox_xyxy[3] <= cutoff_y
+
+
+def _best_detection_for_gt(
+    gt: GTItem,
+    detections: list[DetectionItem],
+    image_gt_items: list[GTItem] | None = None,
+    top_crop_only: bool = False,
+    top_crop_fraction: float = 1.0,
+) -> tuple[DetectionItem | None, float | None]:
     same_image_cat = [
         det
         for det in detections
         if det.image_id == gt.image_id and det.category_id == gt.category_id
+        and _detection_in_review_crop(det, gt.image_height, top_crop_only, top_crop_fraction)
     ]
+    if image_gt_items is not None:
+        other_gt_boxes = [
+            other_gt.bbox_xyxy
+            for other_gt in image_gt_items
+            if other_gt.global_idx != gt.global_idx
+        ]
+        if other_gt_boxes:
+            same_image_cat = [
+                det
+                for det in same_image_cat
+                # Do not use detections already aimed at a neighboring GT to explain this miss.
+                if not np.any(_iou_one_to_many(det.bbox_xyxy, other_gt_boxes) > 0.0)
+            ]
     if not same_image_cat:
         return None, None
     ious = _iou_one_to_many(gt.bbox_xyxy, [det.bbox_xyxy for det in same_image_cat])
@@ -431,10 +469,19 @@ def _miss_reason(
     all_detections: list[DetectionItem],
     final_detections: list[DetectionItem],
     matched_det_ids: set[int],
+    image_gt_items: list[GTItem],
     confidence_threshold: float,
     iou_threshold: float,
+    top_crop_only: bool,
+    top_crop_fraction: float,
 ) -> str:
-    best_final, best_final_iou = _best_detection_for_gt(gt, final_detections)
+    best_final, best_final_iou = _best_detection_for_gt(
+        gt,
+        final_detections,
+        image_gt_items,
+        top_crop_only,
+        top_crop_fraction,
+    )
     if best_final is not None and best_final_iou is not None:
         if best_final_iou >= iou_threshold:
             if best_final.global_idx in matched_det_ids:
@@ -442,7 +489,13 @@ def _miss_reason(
             return "unmatched_after_greedy_matching"
         return "low_iou"
 
-    best_any, best_any_iou = _best_detection_for_gt(gt, all_detections)
+    best_any, best_any_iou = _best_detection_for_gt(
+        gt,
+        all_detections,
+        image_gt_items,
+        top_crop_only,
+        top_crop_fraction,
+    )
     if best_any is None or best_any_iou is None:
         return "no_candidate_detection"
     if best_any.score < confidence_threshold:
@@ -520,6 +573,8 @@ def _write_review_images(
     final_detections_by_img: dict[int, list[DetectionItem]],
     best_candidate: DetectionItem | None,
     output_dir: Path,
+    top_crop_only: bool,
+    top_crop_fraction: float,
 ) -> tuple[Path | None, Path | None, Path | None]:
     originals_dir = output_dir / "originals"
     overlays_dir = output_dir / "overlays"
@@ -535,6 +590,8 @@ def _write_review_images(
 
     overlay = image.copy()
     for det in final_detections_by_img.get(gt.image_id, []):
+        if not _detection_in_review_crop(det, gt.image_height, top_crop_only, top_crop_fraction):
+            continue
         _draw_box(overlay, det.bbox_xyxy, f"det {det.score:.2f}", (255, 170, 0), 1)
     if best_candidate is not None and best_candidate.score < row["confidence_threshold"]:
         _draw_box(
@@ -560,6 +617,7 @@ def _write_review_images(
 
 def _build_false_negative_rows(
     false_negatives: list[GTItem],
+    gt_by_img: dict[int, list[GTItem]],
     all_detections: list[DetectionItem],
     final_detections: list[DetectionItem],
     matched_det_ids: set[int],
@@ -570,6 +628,8 @@ def _build_false_negative_rows(
     confidence_threshold: float,
     iou_threshold: float,
     size_bin_edges: list[float],
+    top_crop_only: bool,
+    top_crop_fraction: float,
 ) -> list[dict[str, Any]]:
     image_dir = Path(dataset_path).resolve() / "val"
     final_detections_by_img: dict[int, list[DetectionItem]] = defaultdict(list)
@@ -581,8 +641,21 @@ def _build_false_negative_rows(
 
     for idx, gt in enumerate(false_negatives):
         image_path = image_dir / gt.file_name
-        best_any, best_any_iou = _best_detection_for_gt(gt, all_detections)
-        best_final, best_final_iou = _best_detection_for_gt(gt, final_detections)
+        image_gt_items = gt_by_img.get(gt.image_id, [])
+        best_any, best_any_iou = _best_detection_for_gt(
+            gt,
+            all_detections,
+            image_gt_items,
+            top_crop_only,
+            top_crop_fraction,
+        )
+        best_final, best_final_iou = _best_detection_for_gt(
+            gt,
+            final_detections,
+            image_gt_items,
+            top_crop_only,
+            top_crop_fraction,
+        )
 
         gt_w = max(0.0, gt.bbox_xyxy[2] - gt.bbox_xyxy[0])
         gt_h = max(0.0, gt.bbox_xyxy[3] - gt.bbox_xyxy[1])
@@ -615,8 +688,11 @@ def _build_false_negative_rows(
                 all_detections,
                 final_detections,
                 matched_det_ids,
+                image_gt_items,
                 confidence_threshold,
                 iou_threshold,
+                top_crop_only,
+                top_crop_fraction,
             ),
             "best_candidate_iou": best_any_iou,
             "best_candidate_score": best_any.score if best_any is not None else None,
@@ -650,6 +726,8 @@ def _build_false_negative_rows(
                     final_detections_by_img=final_detections_by_img,
                     best_candidate=best_any,
                     output_dir=output_dir,
+                    top_crop_only=top_crop_only,
+                    top_crop_fraction=top_crop_fraction,
                 )
                 row["original_copy_path"] = str(original_path) if original_path else ""
                 row["overlay_path"] = str(overlay_path) if overlay_path else ""
@@ -1054,6 +1132,7 @@ def main(argv: list[str] | None = None) -> None:
 
     rows = _build_false_negative_rows(
         false_negatives=false_negatives,
+        gt_by_img=gt_by_img,
         all_detections=detections,
         final_detections=final_detections,
         matched_det_ids=matched_det_ids,
@@ -1064,6 +1143,8 @@ def main(argv: list[str] | None = None) -> None:
         confidence_threshold=confidence_threshold,
         iou_threshold=float(args.iou_threshold),
         size_bin_edges=[float(v) for v in args.size_bin_edges],
+        top_crop_only=top_crop_only,
+        top_crop_fraction=top_crop_fraction,
     )
 
     counts = {
