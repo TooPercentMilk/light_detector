@@ -106,6 +106,7 @@ _TAG_TO_CLASS: Dict[str, int] = {
     "stopLeft": 0,
     "warning": 1,     # yellow
     "warningLeft": 1,
+    "off": 3,
 }
 
 _CLASS_NAMES = {0: "red", 1: "yellow", 2: "green", 3: "off"}

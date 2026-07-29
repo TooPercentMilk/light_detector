@@ -67,6 +67,7 @@ _TAG_TO_CLASS: dict[str, int] = {
     "stopLeft": 0,
     "warning": 1,
     "warningLeft": 1,
+    "off": 3,
 }
 
 # Default sqrt(area) bin edges in original-image pixels. Designed to spotlight

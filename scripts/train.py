@@ -37,6 +37,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -50,6 +51,18 @@ logger = logging.getLogger(__name__)
 
 WEIGHTS_DIR = Path("weights")
 DEFAULT_DETECTOR_IMAGE_SIZE = 960
+
+
+def _infer_detector_num_classes(dataset_path: str | Path) -> int | None:
+    ann_path = Path(dataset_path) / "annotations" / "instances_train.json"
+    if not ann_path.is_file():
+        return None
+    with open(ann_path, "r", encoding="utf-8") as f:
+        coco = json.load(f)
+    categories = coco.get("categories", [])
+    if not categories:
+        return None
+    return len(categories)
 
 
 def train_detector(args: argparse.Namespace) -> Path:
@@ -66,6 +79,10 @@ def train_detector(args: argparse.Namespace) -> Path:
         logger.info("Resuming detector training from checkpoint: %s", args.det_resume)
 
     dev = args.device or ("cuda" if _cuda_available() else "cpu")
+    det_num_classes = args.det_num_classes
+    if det_num_classes is None:
+        det_num_classes = _infer_detector_num_classes(args.dataset) or 1
+        logger.info("Inferred detector class count from dataset: %d", det_num_classes)
     mosaic_prob = 1.0
     scale_jitter_range = (0.5, 1.5)
     flip_prob = 0.5
@@ -76,7 +93,7 @@ def train_detector(args: argparse.Namespace) -> Path:
 
     trainer = YoloxTrainer(
         model_config={
-            "num_classes": args.det_num_classes,
+            "num_classes": det_num_classes,
             "input_size": args.det_input_size,
             "device": dev,
             "pretrained_ckpt": pretrained,
@@ -202,7 +219,12 @@ def main(argv: list[str] | None = None) -> None:
     det.add_argument("--det-epochs", type=int, default=50)
     det.add_argument("--det-batch-size", type=int, default=8)
     det.add_argument("--det-lr", type=float, default=1e-3)
-    det.add_argument("--det-num-classes", type=int, default=1)
+    det.add_argument(
+        "--det-num-classes",
+        type=int,
+        default=None,
+        help="Detector class count; defaults to len(dataset annotations categories)",
+    )
     det.add_argument(
         "--det-image-size",
         type=int,
@@ -292,6 +314,8 @@ def main(argv: list[str] | None = None) -> None:
         args.det_input_size = [args.det_image_size, args.det_image_size]
     elif any(v <= 0 for v in args.det_input_size):
         parser.error("--det-input-size values must be positive")
+    if args.det_num_classes is not None and args.det_num_classes <= 0:
+        parser.error("--det-num-classes must be positive")
     if args.det_small_light_flip_range[0] < 0:
         parser.error("--det-small-light-flip-range MIN_PX must be non-negative")
     if args.det_small_light_flip_range[1] <= args.det_small_light_flip_range[0]:

@@ -47,6 +47,18 @@ logger = logging.getLogger(__name__)
 RESULTS_DIR = Path("runs/eval")
 
 
+def _infer_detector_num_classes(dataset_path: str | Path, split: str = "val") -> int | None:
+    ann_path = Path(dataset_path) / "annotations" / f"instances_{split}.json"
+    if not ann_path.is_file():
+        return None
+    with open(ann_path, "r", encoding="utf-8") as f:
+        coco = json.load(f)
+    categories = coco.get("categories", [])
+    if not categories:
+        return None
+    return len(categories)
+
+
 def _sequence_from_filename(fname: str) -> str:
     """Extract the sequence name from a COCO image filename.
 
@@ -98,6 +110,14 @@ def evaluate_detector(
     cfg = load_config(config_path)
     if input_size is not None:
         apply_detector_input_size(cfg, input_size)
+    inferred_num_classes = _infer_detector_num_classes(dataset_path, "val")
+    if inferred_num_classes is not None and cfg.detector.num_classes != inferred_num_classes:
+        logger.info(
+            "Overriding detector num_classes from config (%d) to dataset categories (%d)",
+            cfg.detector.num_classes,
+            inferred_num_classes,
+        )
+        cfg.detector.num_classes = inferred_num_classes
     dev = device or cfg.detector.device
     top_crop_only = (
         top_crop_only
@@ -203,6 +223,7 @@ _TAG_TO_CLASS: dict[str, int] = {
     "stopLeft": 0,
     "warning": 1,     # yellow
     "warningLeft": 1,
+    "off": 3,
 }
 
 _CLASS_NAMES = {0: "red", 1: "yellow", 2: "green", 3: "off"}
@@ -418,6 +439,14 @@ def evaluate_pipeline(
     cfg = load_config(config_path)
     if input_size is not None:
         apply_detector_input_size(cfg, input_size)
+    inferred_num_classes = _infer_detector_num_classes(dataset_path, "val")
+    if inferred_num_classes is not None and cfg.detector.num_classes != inferred_num_classes:
+        logger.info(
+            "Overriding detector num_classes from config (%d) to dataset categories (%d)",
+            cfg.detector.num_classes,
+            inferred_num_classes,
+        )
+        cfg.detector.num_classes = inferred_num_classes
     if device:
         cfg.detector.device = device
         cfg.classifier.device = device

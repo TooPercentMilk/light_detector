@@ -815,6 +815,7 @@ class YoloxTrainer:
                     device=str(device),
                     batch_size=batch_size,
                     positive_images_only=positive_images_only,
+                    num_classes=int(num_classes),
                     classifier=classifier,
                 )
                 val_map = val_metrics.get("mAP", 0.0)
@@ -979,6 +980,7 @@ class YoloxTrainer:
         device: str,
         batch_size: int,
         positive_images_only: bool,
+        num_classes: int,
         classifier=None,
     ) -> dict:
         """Run detector COCO mAP on the val split, plus optional e2e accuracy."""
@@ -1013,6 +1015,7 @@ class YoloxTrainer:
                 device=device,
                 classifier=classifier,
                 positive_images_only=positive_images_only,
+                num_classes=num_classes,
                 top_crop_only=top_crop_only,
                 top_crop_fraction=top_crop_fraction,
                 conf_threshold=self.model_config.get("conf_threshold", 0.25),
@@ -1031,6 +1034,7 @@ class YoloxTrainer:
         device: str,
         classifier,
         positive_images_only: bool,
+        num_classes: int,
         top_crop_only: bool = False,
         top_crop_fraction: float = DEFAULT_TOP_CROP_FRACTION,
         conf_threshold: float = 0.1,
@@ -1047,6 +1051,7 @@ class YoloxTrainer:
             "go": 2, "goLeft": 2, "goForward": 2,
             "stop": 0, "stopLeft": 0,
             "warning": 1, "warningLeft": 1,
+            "off": 3,
         }
         state_to_idx = {"red": 0, "yellow": 1, "green": 2, "off": 3}
 
@@ -1096,7 +1101,7 @@ class YoloxTrainer:
 
                 with torch.amp.autocast("cuda", enabled=use_amp):
                     raw = model(img_tensor)
-                dets = postprocess(raw, 1, conf_threshold, nms_threshold)
+                dets = postprocess(raw, num_classes, conf_threshold, nms_threshold)
 
                 gt_anns = anns_by_img.get(img_id, [])
                 gt_boxes: list = []
